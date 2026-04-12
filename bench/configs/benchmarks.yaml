@@ -1,0 +1,58 @@
+benchmarks:
+  # VLM benchmarks — need generous max_tokens since Qwen3-VL produces CoT-style answers
+  - id: ai2d
+    type: vlm
+    sample_count: 500
+    metric: option_match
+    max_tokens: 512
+  - id: chartqa
+    type: vlm
+    sample_count: 500
+    metric: relaxed_accuracy
+    max_tokens: 256
+  - id: chartqapro
+    type: vlm
+    sample_count: 500
+    metric: relaxed_accuracy
+    max_tokens: 256
+  - id: docvqa
+    type: vlm
+    sample_count: 500
+    metric: anls
+    max_tokens: 128
+  - id: mathvista
+    type: vlm
+    sample_count: 500
+    metric: mathvista_match
+    max_tokens: 512
+  - id: mmmu
+    type: vlm
+    sample_count: 500
+    metric: option_match
+    max_tokens: 1024  # MMMU STEM questions need long CoT
+  - id: ocrbench_v2
+    type: vlm
+    sample_count: 500
+    metric: exact_match
+    max_tokens: 128
+  - id: textvqa
+    type: vlm
+    sample_count: 500
+    metric: normalized_exact_match
+    max_tokens: 64
+  # Text benchmarks
+  - id: mmlu
+    type: text
+    sample_count: 1000
+    metric: option_match
+    max_tokens: 256
+  - id: commonsenseqa
+    type: text
+    sample_count: 3000
+    metric: option_match
+    max_tokens: 128
+  - id: hellaswag
+    type: text
+    sample_count: 3000
+    metric: option_match
+    max_tokens: 128

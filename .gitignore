@@ -1,0 +1,25 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+bench/.venv/
+.ipynb_checkpoints/
+
+# Large binaries
+*.gguf
+models/
+llama.cpp/build/
+
+# Experiment outputs (regeneratable)
+results/kv_dumps/
+results/kv_dumps_norot/
+results/runs/*.json
+results/reports/kv_analysis/plots/
+
+# IDE / tools
+.codex/
+.claude/
+
+# PDFs (large, tracked separately if needed)
+pdfs/
+

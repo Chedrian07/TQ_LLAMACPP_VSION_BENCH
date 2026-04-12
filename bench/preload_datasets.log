@@ -1,0 +1,43 @@
+
+>>> Loading ai2d...
+  OK ai2d: 5 samples loaded
+    keys: ['id', 'image', 'question', 'answer', 'options']
+
+>>> Loading chartqa...
+  OK chartqa: 5 samples loaded
+    keys: ['id', 'image', 'question', 'answer']
+
+>>> Loading chartqapro...
+  OK chartqapro: 5 samples loaded
+    keys: ['id', 'image', 'question', 'answer']
+
+>>> Loading commonsenseqa...
+  OK commonsenseqa: 5 samples loaded
+    keys: ['id', 'question', 'answer', 'options']
+
+>>> Loading docvqa...
+  OK docvqa: 5 samples loaded
+    keys: ['id', 'image', 'question', 'answer']
+
+>>> Loading hellaswag...
+  OK hellaswag: 5 samples loaded
+    keys: ['id', 'question', 'answer', 'options']
+
+>>> Loading mathvista...
+  OK mathvista: 5 samples loaded
+    keys: ['id', 'image', 'question', 'answer', 'question_type']
+
+>>> Loading mmlu...
+  OK mmlu: 5 samples loaded
+    keys: ['id', 'question', 'answer', 'options', 'subject']
+
+>>> Loading mmmu...
+  OK mmmu: 5 samples loaded
+    keys: ['id', 'image', 'question', 'answer', 'options']
+
+>>> Loading ocrbench_v2...
+  FAIL ocrbench_v2: RuntimeError: Could not load OCRBench-v2 from HuggingFace. Tried: echo840/OCRBench_v2, echo840/OCRBench-v2, lmms-lab/OCRBench_v2
+
+>>> Loading textvqa...
+  OK textvqa: 5 samples loaded
+    keys: ['id', 'image', 'question', 'answer']

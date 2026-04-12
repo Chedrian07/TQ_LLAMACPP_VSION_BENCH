@@ -1,0 +1,17 @@
+models:
+  qwen3_vl_2b_instruct:
+    family: qwen3-vl
+    model_path: ../../models/Qwen3-VL-2B-Instruct/model.gguf
+    mmproj_path: ../../models/Qwen3-VL-2B-Instruct/mmproj.gguf
+    description: Qwen3-VL-2B-Instruct BF16 GGUF
+    reasoning_mode: off
+    # Instruct model uses benchmark-level max_tokens as-is
+  qwen3_vl_2b_thinking:
+    family: qwen3-vl
+    model_path: ../../models/Qwen3-VL-2B-Thinking/model.gguf
+    mmproj_path: ../../models/Qwen3-VL-2B-Thinking/mmproj.gguf
+    description: Qwen3-VL-2B-Thinking BF16 GGUF
+    reasoning_mode: think
+    # Thinking model emits long <think>...</think> reasoning chains;
+    # floor max_tokens at 4096 even if benchmark says less.
+    max_tokens_override: 4096

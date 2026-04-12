@@ -1,0 +1,98 @@
+defaults:
+  ctx_size: 32768
+  flash_attn: true
+  n_gpu_layers: 99
+  temperature: 0.0
+
+runtimes:
+  - id: baseline
+    method: none
+    cache_type_k: f16
+    cache_type_v: f16
+    bits: "16"
+    description: FP16 baseline
+  - id: lcpp-kv-8
+    method: llama.cpp-native
+    cache_type_k: q8_0
+    cache_type_v: q8_0
+    bits: "8"
+    description: llama.cpp native KV quantization
+  - id: lcpp-kv-4
+    method: llama.cpp-native
+    cache_type_k: q4_0
+    cache_type_v: q4_0
+    bits: "4"
+    description: llama.cpp native KV quantization
+  - id: lcpp-kv-2
+    method: llama.cpp-native
+    cache_type_k: q2_K
+    cache_type_v: q2_K
+    bits: "2"
+    description: llama.cpp native KV quantization
+  - id: tq-2
+    method: turboquant-mse
+    cache_type_k: turbo2
+    cache_type_v: turbo2
+    bits: "2"
+    description: Algorithm 1 symmetric 2-bit
+  - id: tq-2h
+    method: turboquant-mse
+    cache_type_k: turbo2h
+    cache_type_v: turbo2h
+    bits: "2.5"
+    description: Algorithm 1 fractional 2.5-bit
+  - id: tq-3
+    method: turboquant-mse
+    cache_type_k: turbo3
+    cache_type_v: turbo3
+    bits: "3"
+    description: Algorithm 1 symmetric 3-bit
+  - id: tq-3h
+    method: turboquant-mse
+    cache_type_k: turbo3h
+    cache_type_v: turbo3h
+    bits: "3.5"
+    description: Algorithm 1 fractional 3.5-bit
+  - id: tq-4
+    method: turboquant-mse
+    cache_type_k: turbo4
+    cache_type_v: turbo4
+    bits: "4"
+    description: Algorithm 1 symmetric 4-bit
+  - id: tq-K4V2
+    method: turboquant-mse
+    cache_type_k: turbo4
+    cache_type_v: turbo2
+    bits: "K4/V2"
+    description: Asymmetric K/V average 3-bit
+  - id: tq-K4V3
+    method: turboquant-mse
+    cache_type_k: turbo4
+    cache_type_v: turbo3
+    bits: "K4/V3"
+    description: Asymmetric K/V average 3.5-bit
+  - id: tq-K3V2
+    method: turboquant-mse
+    cache_type_k: turbo3
+    cache_type_v: turbo2
+    bits: "K3/V2"
+    description: Asymmetric K/V average 2.5-bit
+  - id: tqp-3
+    method: turboquant-prod
+    cache_type_k: turbop3
+    cache_type_v: turbop3
+    bits: "3"
+    description: Algorithm 2 prod 3-bit
+  - id: tqp-4
+    method: turboquant-prod
+    cache_type_k: turbop4
+    cache_type_v: turbop4
+    bits: "4"
+    description: Algorithm 2 prod 4-bit
+  - id: tqp-5
+    method: turboquant-prod
+    cache_type_k: turbop5
+    cache_type_v: turbop5
+    bits: "5"
+    description: Algorithm 2 prod 5-bit
+
