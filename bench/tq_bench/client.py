@@ -83,8 +83,15 @@ class LlamaApiClient:
         *,
         max_tokens: int = 256,
         temperature: float = 0.0,
+        seed: int | None = None,
+        top_k: int | None = None,
+        top_p: float | None = None,
+        min_p: float | None = None,
+        repeat_penalty: float | None = None,
+        presence_penalty: float | None = None,
+        frequency_penalty: float | None = None,
     ) -> dict[str, Any]:
-        return {
+        payload = {
             "model": model,
             "messages": [
                 {"role": message.role, "content": message.content}
@@ -93,6 +100,21 @@ class LlamaApiClient:
             "max_tokens": max_tokens,
             "temperature": temperature,
         }
+        if seed is not None:
+            payload["seed"] = seed
+        if top_k is not None:
+            payload["top_k"] = top_k
+        if top_p is not None:
+            payload["top_p"] = top_p
+        if min_p is not None:
+            payload["min_p"] = min_p
+        if repeat_penalty is not None:
+            payload["repeat_penalty"] = repeat_penalty
+        if presence_penalty is not None:
+            payload["presence_penalty"] = presence_penalty
+        if frequency_penalty is not None:
+            payload["frequency_penalty"] = frequency_penalty
+        return payload
 
     # ------------------------------------------------------------------
     # Image encoding
@@ -151,6 +173,12 @@ class LlamaApiClient:
                 resp = self._http.post(url, json=payload)
 
                 if resp.status_code < 500:
+                    if resp.status_code >= 400:
+                        # Log the server's error body before raising
+                        body = resp.text[:500] if resp.text else "(empty)"
+                        logger.warning(
+                            "HTTP %d from server: %s", resp.status_code, body
+                        )
                     resp.raise_for_status()
                     return resp.json()
 
@@ -195,6 +223,13 @@ class LlamaApiClient:
         model: str = "default",
         max_tokens: int = 256,
         temperature: float = 0.0,
+        seed: int | None = None,
+        top_k: int | None = None,
+        top_p: float | None = None,
+        min_p: float | None = None,
+        repeat_penalty: float | None = None,
+        presence_penalty: float | None = None,
+        frequency_penalty: float | None = None,
     ) -> str:
         """Send a prompt (optionally with an image) and return the reply text.
 
@@ -226,6 +261,13 @@ class LlamaApiClient:
             messages=messages,
             max_tokens=max_tokens,
             temperature=temperature,
+            seed=seed,
+            top_k=top_k,
+            top_p=top_p,
+            min_p=min_p,
+            repeat_penalty=repeat_penalty,
+            presence_penalty=presence_penalty,
+            frequency_penalty=frequency_penalty,
         )
         resp = self.chat_completions(payload)
         return self.extract_reply(resp)

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -46,6 +46,18 @@ class ModelConfig:
     gpu_id: int | None = None
     port: int | None = None
     parallel_requests: int | None = None
+    # Optional model-specific sampling defaults. These are sent per request
+    # to llama-server's OpenAI-compatible API.
+    sampling_seed: int | None = None
+    temperature: float | None = None
+    top_k: int | None = None
+    top_p: float | None = None
+    min_p: float | None = None
+    repeat_penalty: float | None = None
+    presence_penalty: float | None = None
+    frequency_penalty: float | None = None
+    quantized_model_paths: dict[str, Path] = field(default_factory=dict)
+    model_quantization: str = "bf16"
 
 
 @dataclass(frozen=True)
@@ -126,6 +138,15 @@ def load_models(path: str | Path) -> dict[str, ModelConfig]:
         mmproj_value = item.get("mmproj_path")
         mmproj_path = (resolved.parent / mmproj_value).resolve() if mmproj_value else None
         mto = item.get("max_tokens_override")
+        quantized_model_paths_raw = item.get("quantized_model_paths", {})
+        if not isinstance(quantized_model_paths_raw, dict):
+            raise TypeError(
+                f"Model config for {model_id}.quantized_model_paths must be a mapping"
+            )
+        quantized_model_paths = {
+            str(quant_name).lower(): (resolved.parent / rel_path).resolve()
+            for quant_name, rel_path in quantized_model_paths_raw.items()
+        }
         loaded[model_id] = ModelConfig(
             id=model_id,
             family=item["family"],
@@ -141,6 +162,35 @@ def load_models(path: str | Path) -> dict[str, ModelConfig]:
                 if item.get("parallel_requests") is not None
                 else None
             ),
+            sampling_seed=(
+                int(item["sampling_seed"])
+                if item.get("sampling_seed") is not None
+                else None
+            ),
+            temperature=(
+                float(item["temperature"])
+                if item.get("temperature") is not None
+                else None
+            ),
+            top_k=int(item["top_k"]) if item.get("top_k") is not None else None,
+            top_p=float(item["top_p"]) if item.get("top_p") is not None else None,
+            min_p=float(item["min_p"]) if item.get("min_p") is not None else None,
+            repeat_penalty=(
+                float(item["repeat_penalty"])
+                if item.get("repeat_penalty") is not None
+                else None
+            ),
+            presence_penalty=(
+                float(item["presence_penalty"])
+                if item.get("presence_penalty") is not None
+                else None
+            ),
+            frequency_penalty=(
+                float(item["frequency_penalty"])
+                if item.get("frequency_penalty") is not None
+                else None
+            ),
+            quantized_model_paths=quantized_model_paths,
         )
     return loaded
 

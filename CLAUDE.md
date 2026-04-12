@@ -535,6 +535,22 @@ uv run jupyter lab
 - `BaseEvaluator.score(metadata=)` 인프라, evaluator `_REGISTRY` 통합, `BenchmarkConfig` parity 필드
 - 통합 벤치마크 러너 `bench/run_bench.py` (CLI: `--num`, `--runtimes`, `--benchmarks`, `--model`, `--resume`)
 
+### Benchmark Reproducibility Rules
+
+- **모델 병렬 처리(`parallel_requests`)는 실험 변수이자 필수 운영 설정이다.**
+  벤치마크는 모델별 병렬 요청 수를 명시적으로 유지해야 하며, 디버깅 중에
+  묵시적으로 단일 요청 모드로 바꾸거나 제거하면 안 된다. 병렬성 변경은
+  반드시 의도된 실험 변경으로 취급한다.
+- **벤치용 decoding/sampling 설정은 고정된 통제 변수다.**
+  현재 프로젝트의 모델별 `temperature`, `top_p`, `top_k`, `min_p`,
+  penalties, `sampling_seed`, 벤치마크별 `max_tokens`, Thinking 모델의
+  `max_tokens_override`는 재현성 확보를 위한 고정 설정으로 취급한다.
+  사용자가 명시적으로 요청하지 않는 한 이 값들을 임의로 조정하지 않는다.
+- **문제 재현/디버깅 시에도 먼저 런처/서버/커널 문제를 분리하되, benchmark
+  config 자체는 유지한다.** 즉, 실패 원인을 좁히기 위해 런타임 축, 샘플 수,
+  포트, 프로세스 lifecycle은 바꿀 수 있지만, benchmark 설정값을 casually
+  바꾸지 않는다.
+
 ### Phase 6: KV 분석 파이프라인 ✅ 완료
 - tools/kv-dump (C++): llama-kv-dump CLI, 모델 forward 후 K/V dump + meta.json
 - bench/tq_bench/kv_analysis/ (Python): loader, distribution, outliers, quant_error, rotation_analysis (Beta KS test), attention_analysis, report

@@ -2,22 +2,48 @@ models:
   qwen3_vl_2b_instruct:
     family: qwen3-vl
     model_path: ../../models/Qwen3-VL-2B-Instruct/model.gguf
+    quantized_model_paths:
+      q8_0: ../../models/Qwen3-VL-2B-Instruct/Qwen3-VL-2B-Instruct-Q8_0.gguf
+      q4_k_m: ../../models/Qwen3-VL-2B-Instruct/Qwen3-VL-2B-Instruct-Q4_K_M.gguf
     mmproj_path: ../../models/Qwen3-VL-2B-Instruct/mmproj.gguf
     description: Qwen3-VL-2B-Instruct BF16 GGUF
-    reasoning_mode: off
+    reasoning_mode: "off"
     gpu_id: 1
     port: 8081
     parallel_requests: 4
-    # Instruct model uses benchmark-level max_tokens as-is
+    # Unsloth/Qwen recommended inference sampling for Instruct:
+    # temp=0.7, top_p=0.8, top_k=20, min_p=0.0, repetition_penalty=1.0,
+    # presence_penalty=1.5, seed=3407.
+    sampling_seed: 3407
+    temperature: 0.7
+    top_k: 20
+    top_p: 0.8
+    min_p: 0.0
+    repeat_penalty: 1.0
+    presence_penalty: 1.5
+    # Keep benchmark-level max_tokens as-is for parity/runtime control.
   qwen3_vl_2b_thinking:
     family: qwen3-vl
     model_path: ../../models/Qwen3-VL-2B-Thinking/model.gguf
+    quantized_model_paths:
+      q8_0: ../../models/Qwen3-VL-2B-Thinking/Qwen3-VL-2B-Thinking-Q8_0.gguf
+      q4_k_m: ../../models/Qwen3-VL-2B-Thinking/Qwen3-VL-2B-Thinking-Q4_K_M.gguf
     mmproj_path: ../../models/Qwen3-VL-2B-Thinking/mmproj.gguf
     description: Qwen3-VL-2B-Thinking BF16 GGUF
-    reasoning_mode: think
+    reasoning_mode: "think"
     gpu_id: 0
     port: 8080
-    parallel_requests: 4
-    # Thinking model emits long <think>...</think> reasoning chains;
-    # floor max_tokens at 4096 even if benchmark says less.
+    parallel_requests: 2
+    # Unsloth/Qwen recommended inference sampling for Thinking:
+    # temp=1.0, top_p=0.95, top_k=20, min_p=0.0, repetition_penalty=1.0,
+    # presence_penalty=0.0, seed=1234.
+    sampling_seed: 1234
+    temperature: 1.0
+    top_k: 20
+    top_p: 0.95
+    min_p: 0.0
+    repeat_penalty: 1.0
+    presence_penalty: 0.0
+    # Keep concurrency modest; keep benchmark-level output budgets, but floor
+    # max_tokens at 4096 so long reasoning chains do not get clipped too early.
     max_tokens_override: 4096

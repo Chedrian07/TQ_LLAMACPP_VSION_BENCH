@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import signal
+import socket
 import subprocess
 import time
 from dataclasses import dataclass
@@ -34,6 +35,8 @@ class LlamaServer:
         self.proc: Popen[str] | None = None
 
     def build_command(self, runtime_config: RuntimeConfig, *, gpu_id: int | None = None) -> list[str]:
+        n_parallel = max(1, self.launch_config.n_parallel)
+
         cmd = [
             str(self.launch_config.binary_path),
             "-m",
@@ -47,7 +50,11 @@ class LlamaServer:
             "--port",
             str(self.launch_config.port),
             "--ctx-size",
-            str(runtime_config.ctx_size),
+            str(runtime_config.ctx_size * n_parallel),
+            "-b",
+            "512",
+            "-ub",
+            "512",
             "--jinja",
             "--temp",
             "0.0",
@@ -56,12 +63,13 @@ class LlamaServer:
             "-fa",
             "on",
             "--parallel",
-            str(max(1, self.launch_config.n_parallel)),
+            str(n_parallel),
         ]
         if self.launch_config.mmproj_path is not None:
             cmd.extend(["--mmproj", str(self.launch_config.mmproj_path)])
         # Disable prompt cache to save VRAM.
         cmd.extend(["--cache-ram", "0"])
+        cmd.append("--no-mmap")
         return cmd
 
     # ------------------------------------------------------------------
@@ -111,6 +119,7 @@ class LlamaServer:
 
         # Make sure no stale server is occupying our port ------------------
         self._kill_existing_on_port()
+        self._ensure_port_available()
 
         # Stop any previously managed process ------------------------------
         self.stop()
@@ -140,6 +149,7 @@ class LlamaServer:
 
         self.proc = Popen(
             cmd,
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
@@ -179,10 +189,12 @@ class LlamaServer:
             f"on port {self.launch_config.port}"
         )
 
-    def stop(self) -> None:
+    def stop(self, *, dump_output: bool = False) -> None:
         """Gracefully terminate the managed llama-server process.
 
         Sends SIGTERM and waits up to 5 seconds, then escalates to SIGKILL.
+        If *dump_output* is True, reads and logs the server's stdout/stderr
+        before closing — useful for diagnosing crashes.
         """
         if self.proc is None:
             return
@@ -202,10 +214,23 @@ class LlamaServer:
             self.proc.kill()  # SIGKILL
             self.proc.wait(timeout=5)
         finally:
+            if dump_output and self.proc is not None and self.proc.stdout is not None:
+                try:
+                    tail = self.proc.stdout.read()
+                    if tail and tail.strip():
+                        # Show last 3000 chars of server output
+                        snippet = tail.strip()[-3000:]
+                        logger.error(
+                            "llama-server (pid=%d) output before exit:\n%s",
+                            pid, snippet,
+                        )
+                except Exception:
+                    pass
             # Ensure stdout pipe is closed.
             if self.proc is not None and self.proc.stdout is not None:
                 self.proc.stdout.close()
             self.proc = None
+            self._wait_until_port_free(timeout=10.0)
 
     def is_healthy(self) -> bool:
         """Return True if the server responds 200 to ``GET /health``."""
@@ -258,7 +283,7 @@ class LlamaServer:
                     pass
             # Small grace period for the OS to free the port.
             if pids:
-                time.sleep(0.5)
+                self._wait_until_port_free(timeout=10.0)
         except FileNotFoundError:
             # lsof not available -- try ss as fallback.
             try:
@@ -285,10 +310,46 @@ class LlamaServer:
                                     except OSError:
                                         pass
                 if result.stdout.strip():
-                    time.sleep(0.5)
+                    self._wait_until_port_free(timeout=10.0)
             except (FileNotFoundError, subprocess.TimeoutExpired):
                 logger.debug(
                     "Neither lsof nor ss available; skipping port cleanup."
                 )
         except subprocess.TimeoutExpired:
             logger.debug("lsof timed out; skipping port cleanup.")
+
+    def _wait_until_port_free(self, timeout: float = 10.0) -> None:
+        """Wait until the configured TCP port is no longer accepting connections."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            in_use = not self._can_bind_port()
+
+            if not in_use:
+                return
+
+            time.sleep(0.1)
+
+        logger.warning(
+            "Port %d still appears busy after waiting %.1fs",
+            self.launch_config.port,
+            timeout,
+        )
+
+    def _can_bind_port(self) -> bool:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.bind((self.launch_config.host, self.launch_config.port))
+            return True
+        except OSError:
+            return False
+        finally:
+            sock.close()
+
+    def _ensure_port_available(self) -> None:
+        if self._can_bind_port():
+            return
+        raise RuntimeError(
+            f"Port {self.launch_config.port} is already in use before starting llama-server. "
+            f"Choose another --port or stop the conflicting process."
+        )

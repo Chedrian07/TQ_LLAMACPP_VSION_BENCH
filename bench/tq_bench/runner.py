@@ -4,7 +4,7 @@ import logging
 import re
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -173,6 +173,9 @@ class BenchmarkRunner:
         port: int | None = None,
         seed: int = 42,
         parallel_requests: int | None = None,
+        progress_position: int = 0,
+        progress_log_interval: int = 5,
+        progress_heartbeat_seconds: float = 15.0,
     ) -> RunRecord:
         """Execute a single experiment cell.
 
@@ -286,7 +289,7 @@ class BenchmarkRunner:
         try:
             with ThreadPoolExecutor(
                 max_workers=n_parallel,
-                thread_name_prefix=f"tqbench-{runtime.id}",
+                thread_name_prefix=f"tqbench-{model_config.id}-{runtime.id}",
             ) as pool:
                 futures = {
                     pool.submit(
@@ -295,6 +298,7 @@ class BenchmarkRunner:
                         sample=sample,
                         client=client,
                         evaluator=evaluator,
+                        model_config=model_config,
                         model_id=model_config.id,
                         system_prompt=system_prompt,
                         is_vlm=is_vlm,
@@ -305,11 +309,81 @@ class BenchmarkRunner:
                     for idx, sample in enumerate(samples)
                 }
 
-                with tqdm(total=n_samples, desc=desc, unit="sample") as pbar:
-                    for fut in as_completed(futures):
-                        idx, result = fut.result()
-                        sample_results[idx] = result
-                        pbar.update(1)
+                log_every = max(1, progress_log_interval)
+                next_progress_log = log_every
+                n_failed_so_far = 0
+
+                heartbeat_every = max(1.0, float(progress_heartbeat_seconds))
+
+                with tqdm(
+                    total=n_samples,
+                    desc=desc,
+                    unit="sample",
+                    position=progress_position,
+                    dynamic_ncols=True,
+                ) as pbar:
+                    pending = set(futures)
+                    while pending:
+                        done, pending = wait(
+                            pending,
+                            timeout=heartbeat_every,
+                            return_when=FIRST_COMPLETED,
+                        )
+
+                        if not done:
+                            running_count = sum(1 for fut in pending if fut.running())
+                            queued_count = len(pending) - running_count
+                            logger.info(
+                                "  heartbeat[%s] %s x %s: done=%d/%d, in_flight=%d, queued=%d, ok=%d, fail=%d, elapsed=%.0fs",
+                                model_config.id,
+                                runtime.id,
+                                benchmark.id,
+                                pbar.n,
+                                n_samples,
+                                running_count,
+                                queued_count,
+                                pbar.n - n_failed_so_far,
+                                n_failed_so_far,
+                                time.monotonic() - t_start,
+                            )
+                            if not server_crashed_flag.is_set() and not server.is_healthy():
+                                server_crashed_flag.set()
+                                logger.warning(
+                                    "Server crashed during %s x %s (detected during heartbeat, after %d completions)",
+                                    runtime.id,
+                                    benchmark.id,
+                                    pbar.n,
+                                )
+                            if server_crashed_flag.is_set():
+                                for pending_fut in pending:
+                                    pending_fut.cancel()
+                                break
+                            continue
+
+                        for fut in done:
+                            if fut.cancelled():
+                                continue
+
+                            idx, result = fut.result()
+                            sample_results[idx] = result
+                            pbar.update(1)
+                            if result.error:
+                                n_failed_so_far += 1
+
+                            if pbar.n == 1 or pbar.n >= next_progress_log or pbar.n == n_samples:
+                                logger.info(
+                                    "  progress[%s] %s x %s: %d/%d done, ok=%d, fail=%d, elapsed=%.0fs",
+                                    model_config.id,
+                                    runtime.id,
+                                    benchmark.id,
+                                    pbar.n,
+                                    n_samples,
+                                    pbar.n - n_failed_so_far,
+                                    n_failed_so_far,
+                                    time.monotonic() - t_start,
+                                )
+                                while next_progress_log <= pbar.n:
+                                    next_progress_log += log_every
 
                         # Every few completions, double-check the server is
                         # still alive. If it has died, cancel the rest so
@@ -334,11 +408,15 @@ class BenchmarkRunner:
                             # running workers will see the flag and fail
                             # their next server.is_healthy() check, returning
                             # a crash error.
-                            for pending_fut in futures:
-                                if not pending_fut.done():
-                                    pending_fut.cancel()
+                            for pending_fut in pending:
+                                pending_fut.cancel()
+                            break
         finally:
             client.close()
+            try:
+                server.stop(dump_output=server_crashed_flag.is_set())
+            except Exception as exc:
+                logger.warning("Error stopping server: %s", exc)
 
         server_crashed = server_crashed_flag.is_set()
 
@@ -373,12 +451,6 @@ class BenchmarkRunner:
             )
         else:
             aggregate_score = 0.0
-
-        # -- 5. Stop server ----------------------------------------------------
-        try:
-            server.stop()
-        except Exception as exc:
-            logger.warning("Error stopping server: %s", exc)
 
         wall_time = time.monotonic() - t_start
 
@@ -439,6 +511,7 @@ class BenchmarkRunner:
         sample: dict[str, Any],
         client: LlamaApiClient,
         evaluator: Any,
+        model_config: ModelConfig,
         model_id: str,
         system_prompt: str,
         is_vlm: bool,
@@ -495,7 +568,18 @@ class BenchmarkRunner:
             model=model_id,
             messages=messages,
             max_tokens=max_tokens if max_tokens is not None else self.max_tokens,
-            temperature=0.0,
+            temperature=(
+                model_config.temperature
+                if model_config.temperature is not None
+                else 0.0
+            ),
+            seed=model_config.sampling_seed,
+            top_k=model_config.top_k,
+            top_p=model_config.top_p,
+            min_p=model_config.min_p,
+            repeat_penalty=model_config.repeat_penalty,
+            presence_penalty=model_config.presence_penalty,
+            frequency_penalty=model_config.frequency_penalty,
         )
 
         prediction = ""
@@ -561,13 +645,46 @@ class BenchmarkRunner:
     # Message construction helpers
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _encode_image_base64(image: Image.Image, fmt: str = "PNG") -> str:
-        """Encode a PIL Image to a base64 string (without the data URI prefix)."""
+    # Qwen3-VL vision encoder limits.  Images beyond MAX_PIXELS are
+    # resized by the model anyway, so sending oversized PNGs just wastes
+    # bandwidth and can hit llama-server's HTTP body-size limit (→ 400).
+    _VLM_MAX_PIXELS = 1280 * 28 * 28   # 1,003,520
+    _VLM_MIN_PIXELS = 256 * 28 * 28    # 200,704
+
+    @classmethod
+    def _encode_image_base64(cls, image: Image.Image, fmt: str = "JPEG") -> str:
+        """Encode a PIL Image to a base64 string.
+
+        Large images are downscaled to fit within the VLM's max_pixels
+        budget *before* encoding, and JPEG is used by default to keep
+        payload size manageable (~100-300 KB instead of 5-10 MB PNG).
+        """
         import base64
         import io
+        import math
+
+        w, h = image.size
+        pixels = w * h
+
+        if pixels > cls._VLM_MAX_PIXELS:
+            scale = math.sqrt(cls._VLM_MAX_PIXELS / pixels)
+            new_w = max(28, int(w * scale))
+            new_h = max(28, int(h * scale))
+            image = image.resize((new_w, new_h), Image.LANCZOS)
+        elif pixels < cls._VLM_MIN_PIXELS:
+            scale = math.sqrt(cls._VLM_MIN_PIXELS / pixels)
+            new_w = max(28, int(w * scale))
+            new_h = max(28, int(h * scale))
+            image = image.resize((new_w, new_h), Image.LANCZOS)
+
+        if image.mode != "RGB":
+            image = image.convert("RGB")
+
         buf = io.BytesIO()
-        image.save(buf, format=fmt)
+        if fmt.upper() == "JPEG":
+            image.save(buf, format="JPEG", quality=90)
+        else:
+            image.save(buf, format=fmt)
         return base64.b64encode(buf.getvalue()).decode("ascii")
 
     @staticmethod
@@ -592,7 +709,7 @@ class BenchmarkRunner:
                 {
                     "type": "image_url",
                     "image_url": {
-                        "url": f"data:image/png;base64,{image_base64}",
+                        "url": f"data:image/jpeg;base64,{image_base64}",
                     },
                 },
                 {
@@ -627,12 +744,9 @@ class BenchmarkRunner:
         except (KeyError, IndexError, TypeError):
             return ""
 
-        # Strip <think>...</think> blocks — keep only final answer
+        # Strip <think>...</think> blocks — keep only final answer.
+        # Only applies to Thinking models that emit reasoning chains.
         if "</think>" in text:
             text = text.rsplit("</think>", 1)[-1].strip()
-        elif "<think>" in text and "</think>" not in text:
-            # Thinking block started but never closed (max_tokens truncation)
-            # — the entire response is reasoning with no final answer
-            text = ""
 
         return text

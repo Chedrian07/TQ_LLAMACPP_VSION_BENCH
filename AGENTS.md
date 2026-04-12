@@ -103,6 +103,15 @@ As of 2026-04-12, phases 1-8.5 are complete:
 - Keep notebook logic thin; put real logic in `bench/tq_bench/`.
 - When adding benchmark functionality, prefer reusable package code over notebook-only code.
 - When implementing evaluation logic, keep prod runtime failures representable as explicit failed records rather than silent skips.
+- Treat model-level request parallelism as a required benchmark setting. The
+  benchmark runner must keep explicit per-model `parallel_requests` behavior,
+  and benchmark changes must not silently collapse model-side concurrency.
+- Treat benchmark decoding/sampling settings as fixed experimental controls.
+  Benchmark code and configs must keep the project’s current generation
+  settings (`temperature`, `top_p`, `top_k`, `min_p`, penalties, seed,
+  `max_tokens` rules) stable unless the user explicitly asks to run a different
+  experiment. Do not casually “improve” or “tune” these values during
+  debugging.
 
 ## Bench Framework Expectations
 

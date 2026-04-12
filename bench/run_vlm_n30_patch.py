@@ -122,10 +122,14 @@ def main():
     with open(EXISTING_PATH) as f:
         existing = json.load(f)
 
-    # Build a map of existing records: (runtime_id, benchmark_id) -> record
-    existing_map: dict[tuple[str, str], dict] = {}
+    # Build a map of existing records: (model_id, runtime_id, benchmark_id) -> record
+    existing_map: dict[tuple[str, str, str], dict] = {}
     for rec in existing.get("records", []):
-        key = (rec["runtime_id"], rec["benchmark_id"])
+        key = (
+            rec.get("model_id", MODEL_ID),
+            rec["runtime_id"],
+            rec["benchmark_id"],
+        )
         existing_map[key] = rec
 
     # Identify cells that need re-running (status == "error")
@@ -159,9 +163,9 @@ def main():
         parallel_requests=1,
     )
 
-    new_records: dict[tuple[str, str], dict] = {}
+    new_records: dict[tuple[str, str, str], dict] = {}
 
-    for i, (rt_id, bm_id) in enumerate(cells_to_rerun):
+    for i, (_, rt_id, bm_id) in enumerate(cells_to_rerun):
         rt = runtimes_map.get(rt_id)
         bm_orig = benchmarks_map.get(bm_id)
         if not rt or not bm_orig:
@@ -216,7 +220,7 @@ def main():
             "bits": rt.bits,
             "method": rt.method,
         }
-        new_records[(rt_id, bm_id)] = rec_dict
+        new_records[(model_config.id, rt_id, bm_id)] = rec_dict
 
         logger.info("  => status=%s, score=%.4f, time=%.1fs, ok=%d/%d",
                     record.status, record.score or 0,
@@ -226,11 +230,17 @@ def main():
     # Merge new records into existing results
     updated_records = []
     for rec in existing.get("records", []):
-        key = (rec["runtime_id"], rec["benchmark_id"])
+        key = (
+            rec.get("model_id", MODEL_ID),
+            rec["runtime_id"],
+            rec["benchmark_id"],
+        )
         if key in new_records:
             updated_records.append(new_records[key])
-            logger.info("Replaced %s x %s: %s -> %s",
-                        key[0], key[1], rec["status"], new_records[key]["status"])
+            logger.info(
+                "Replaced %s :: %s x %s: %s -> %s",
+                key[0], key[1], key[2], rec["status"], new_records[key]["status"]
+            )
         else:
             updated_records.append(rec)
 

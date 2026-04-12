@@ -17,8 +17,20 @@ Usage:
   # All 11 benchmarks × all runtimes
   uv run python run_bench.py --num 100 --benchmarks all --runtimes all
 
-  # Thinking model
+  # Single model
   uv run python run_bench.py --num 30 --model qwen3_vl_2b_thinking
+
+  # Single model on a specific GPU
+  uv run python run_bench.py --num 30 --model qwen3_vl_2b_instruct --gpu 0
+
+  # Single model with an explicit request parallelism
+  uv run python run_bench.py --num 30 --model qwen3_vl_2b_instruct --parallel 2
+
+  # Apply a quantized model variant
+  uv run python run_bench.py --num 30 --model qwen3_vl_2b_instruct --model-quant q4_k_m
+
+  # Mixed-model dual-GPU run (default when --model is omitted)
+  uv run python run_bench.py --num 50 --runtimes tq-all
 
 Runtimes are grouped into tiers:
   core    = baseline, lcpp-kv-8, lcpp-kv-4, tq-4, tq-K4V3
@@ -44,8 +56,10 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 import time
-from dataclasses import asdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import asdict, replace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -103,7 +117,8 @@ OFFICIAL_SCORES: dict[str, float] = {
     "mathvista": 0.736,
 }
 
-# TQ/prod runtimes: parallel=1 to avoid CUDA concurrency crashes
+# TQ/prod runtimes default to parallel=1 to avoid CUDA concurrency crashes.
+# An explicit CLI --parallel override is allowed to bypass this default.
 TQ_RUNTIME_PREFIXES = ("tq-", "tqp-")
 
 # ---------------------------------------------------------------------------
@@ -112,9 +127,13 @@ TQ_RUNTIME_PREFIXES = ("tq-", "tqp-")
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    format="%(asctime)s [%(levelname)s] %(name)s(%(threadName)s): %(message)s",
     datefmt="%H:%M:%S",
 )
+# Suppress noisy HF dataset HTTP chatter (hundreds of HEAD/GET per load)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("huggingface_hub").setLevel(logging.WARNING)
 logger = logging.getLogger("run_bench")
 
 
@@ -195,8 +214,14 @@ def main():
                         help="Runtime IDs or group names (core/tq-all/prod/all)")
     parser.add_argument("--benchmarks", nargs="+", default=["p0"],
                         help="Benchmark IDs or group names (p0/vlm/text/all)")
-    parser.add_argument("--model", default="qwen3_vl_2b_instruct",
-                        help="Model ID from models.yaml")
+    parser.add_argument("--model", action="append", dest="models", default=None,
+                        help="Model ID from models.yaml (repeatable). Default: all configured models.")
+    parser.add_argument("--gpu", type=int, default=None,
+                        help="Override GPU device id for a single selected model.")
+    parser.add_argument("--parallel", type=int, default=None,
+                        help="Override parallel request count for a single selected model.")
+    parser.add_argument("--model-quant", choices=["bf16", "q8_0", "q4_k_m"], default="bf16",
+                        help="Select which model weight quantization variant to use.")
     parser.add_argument("--port", type=int, default=None,
                         help="Override server port (default: from models.yaml)")
     parser.add_argument("--seed", type=int, default=42)
@@ -210,7 +235,7 @@ def main():
         BenchmarkConfig, ExperimentCell,
         load_benchmarks, load_models, load_runtimes,
     )
-    from tq_bench.runner import BenchmarkRunner
+    from tq_bench.runner import BenchmarkRunner, RunRecord
 
     # Load configs
     runtimes_all = load_runtimes(BENCH_DIR / "configs/runtimes.yaml")
@@ -220,14 +245,64 @@ def main():
     runtimes_map = {rt.id: rt for rt in runtimes_all}
     benchmarks_map = {bm.id: bm for bm in benchmarks_all}
 
-    if args.model not in models:
-        logger.error("Unknown model '%s'. Available: %s", args.model, list(models.keys()))
-        sys.exit(1)
-    model_config = models[args.model]
+    selected_model_ids = args.models or list(models.keys())
+    selected_models = []
+    seen_models: set[str] = set()
+    for model_id in selected_model_ids:
+        if model_id in seen_models:
+            continue
+        if model_id not in models:
+            logger.error("Unknown model '%s'. Available: %s", model_id, list(models.keys()))
+            sys.exit(1)
+        selected_models.append(models[model_id])
+        seen_models.add(model_id)
 
-    # Resolve port from model config or CLI
-    port = args.port or model_config.port or 8080
-    gpu_id = model_config.gpu_id
+    if args.model_quant != "bf16":
+        resolved_models = []
+        for model in selected_models:
+            quant_key = args.model_quant.lower()
+            quant_path = model.quantized_model_paths.get(quant_key)
+            if quant_path is None:
+                logger.error(
+                    "Model '%s' does not define a '%s' quantized path in models.yaml.",
+                    model.id,
+                    args.model_quant,
+                )
+                sys.exit(1)
+            if not quant_path.exists():
+                logger.error(
+                    "Quantized model file not found for '%s' (%s): %s",
+                    model.id,
+                    args.model_quant,
+                    quant_path,
+                )
+                sys.exit(1)
+            resolved_models.append(
+                replace(
+                    model,
+                    model_path=quant_path,
+                    model_quantization=quant_key,
+                    description=f"{model.description} [{args.model_quant}]",
+                )
+            )
+        selected_models = resolved_models
+
+    if len(selected_models) > 1 and args.port is not None:
+        logger.error("--port override is only valid for a single selected model.")
+        sys.exit(1)
+    if len(selected_models) > 1 and args.gpu is not None:
+        logger.error("--gpu override is only valid for a single selected model. Use --model MODEL --gpu N.")
+        sys.exit(1)
+    if len(selected_models) > 1 and args.parallel is not None:
+        logger.error("--parallel override is only valid for a single selected model. Use --model MODEL --parallel N.")
+        sys.exit(1)
+    if len(selected_models) == 1 and args.gpu is not None:
+        selected_models[0] = replace(selected_models[0], gpu_id=args.gpu)
+    if args.parallel is not None:
+        if args.parallel < 1:
+            logger.error("--parallel must be >= 1.")
+            sys.exit(1)
+        selected_models[0] = replace(selected_models[0], parallel_requests=args.parallel)
 
     # Resolve runtime and benchmark lists
     runtime_ids = resolve_ids(args.runtimes, RUNTIME_GROUPS)
@@ -269,159 +344,272 @@ def main():
         ts = datetime.now().strftime("%m%d_%H%M")
         rt_tag = args.runtimes[0] if len(args.runtimes) == 1 else f"{len(runtimes)}rt"
         bm_tag = args.benchmarks[0] if len(args.benchmarks) == 1 else f"{len(benchmarks)}bm"
-        output_path = RESULTS_DIR / f"bench_{rt_tag}_{bm_tag}_n{args.num}_{ts}.json"
+        if len(selected_models) == 1:
+            model_tag = selected_models[0].id
+            if selected_models[0].model_quantization != "bf16":
+                model_tag += f"_{selected_models[0].model_quantization}"
+        else:
+            model_tag = f"{len(selected_models)}models"
+        output_path = RESULTS_DIR / f"bench_{model_tag}_{rt_tag}_{bm_tag}_n{args.num}_{ts}.json"
 
     # Resume: load existing records to skip
     completed_keys: set[str] = set()
     resumed_records: list[dict] = []
+    selected_model_id_set = {model.id for model in selected_models}
     if args.resume:
         try:
             with open(args.resume) as f:
                 prev = json.load(f)
             for rec in prev.get("records", []):
+                rec_model_id = rec.get("model_id")
+                if rec_model_id is None and len(selected_models) == 1:
+                    rec_model_id = selected_models[0].id
+                if rec_model_id not in selected_model_id_set:
+                    continue
                 if rec.get("status") == "ok":
                     key = make_cell_key(
-                        rec.get("model_id", model_config.id),
+                        rec_model_id or "",
                         rec["runtime_id"],
                         rec["benchmark_id"],
                     )
                     completed_keys.add(key)
-                    resumed_records.append(rec)
+                rec["model_id"] = rec_model_id
+                resumed_records.append(rec)
             logger.info("Resumed %d completed cells from %s", len(completed_keys), args.resume)
         except Exception as e:
             logger.warning("Could not resume from %s: %s", args.resume, e)
 
     # Print plan
-    total_cells = len(runtimes) * len(benchmarks)
+    total_cells = len(selected_models) * len(runtimes) * len(benchmarks)
     skip_count = sum(
         1
+        for model in selected_models
         for rt in runtimes
         for bm in benchmarks
-        if make_cell_key(model_config.id, rt.id, bm.id) in completed_keys
+        if make_cell_key(model.id, rt.id, bm.id) in completed_keys
     )
 
     logger.info("=" * 70)
     logger.info("TQ-VLM-Bench")
-    logger.info("  Model:      %s (%s)", model_config.id, model_config.reasoning_mode)
-    logger.info("  GPU:        %s", gpu_id)
+    logger.info(
+        "  Models:     %s",
+        [
+            (
+                f"{m.id}(quant={m.model_quantization}, mode={m.reasoning_mode}, gpu={m.gpu_id}, "
+                f"port={args.port or m.port or 8080}, parallel={m.parallel_requests or 4}, "
+                f"temp={m.temperature if m.temperature is not None else 0.0}, "
+                f"top_p={m.top_p}, top_k={m.top_k}, min_p={m.min_p}, "
+                f"repeat_penalty={m.repeat_penalty}, presence_penalty={m.presence_penalty}, "
+                f"sampling_seed={m.sampling_seed})"
+            )
+            for m in selected_models
+        ],
+    )
     logger.info("  Runtimes:   %s", [rt.id for rt in runtimes])
     logger.info("  Benchmarks: %s", [bm.id for bm in benchmarks])
     logger.info("  Samples:    %d per benchmark", args.num)
     logger.info("  Cells:      %d total, %d to run, %d resumed",
                 total_cells, total_cells - skip_count, skip_count)
-    logger.info("  Port:       %d", port)
     logger.info("  Output:     %s", output_path)
     logger.info("=" * 70)
-
-    # Create runner
-    base_parallel = model_config.parallel_requests or 4
-    runner = BenchmarkRunner(
-        server_binary=SERVER_BINARY,
-        default_port=port,
-        request_timeout=180.0,
-        max_retries=2,
-        parallel_requests=base_parallel,
-    )
 
     # Run matrix
     t_global = time.monotonic()
     all_records: list[dict] = list(resumed_records)
-    scores: dict[str, dict[str, float | None]] = {rt.id: {} for rt in runtimes}
+    scores: dict[str, dict[str, dict[str, float | None]]] = {
+        model.id: {rt.id: {} for rt in runtimes}
+        for model in selected_models
+    }
+    statuses: dict[str, dict[str, dict[str, str | None]]] = {
+        model.id: {rt.id: {} for rt in runtimes}
+        for model in selected_models
+    }
 
     # Fill in resumed scores
     for rec in resumed_records:
-        if rec.get("model_id", model_config.id) == model_config.id:
-            scores.setdefault(rec["runtime_id"], {})[rec["benchmark_id"]] = rec.get("score", 0)
+        rec_model_id = rec.get("model_id")
+        if rec_model_id in scores:
+            score_val = rec.get("score") if rec.get("status") == "ok" else None
+            scores[rec_model_id].setdefault(rec["runtime_id"], {})[rec["benchmark_id"]] = score_val
+            statuses[rec_model_id].setdefault(rec["runtime_id"], {})[rec["benchmark_id"]] = rec.get("status")
 
-    cell_num = 0
-    for rt in runtimes:
-        is_tq = any(rt.id.startswith(p) for p in TQ_RUNTIME_PREFIXES)
-        n_parallel = 1 if is_tq else base_parallel
+    state_lock = threading.Lock()
+    progress_counter = {"done": len(completed_keys)}
 
-        for bm in benchmarks:
-            cell_num += 1
-            cell_key = make_cell_key(model_config.id, rt.id, bm.id)
+    def run_model_queue(lane_idx, model_config):
+        threading.current_thread().name = f"lane-{model_config.id}"
 
-            if cell_key in completed_keys:
-                logger.info("[%d/%d] SKIP (resumed): %s × %s",
-                            cell_num, total_cells, rt.id, bm.id)
-                continue
+        model_port = args.port or model_config.port or 8080
+        model_gpu_id = model_config.gpu_id
+        base_parallel = model_config.parallel_requests or 4
+        runner = BenchmarkRunner(
+            server_binary=SERVER_BINARY,
+            default_port=model_port,
+            request_timeout=180.0,
+            max_retries=2,
+            parallel_requests=base_parallel,
+        )
 
-            cell = ExperimentCell(runtime=rt, benchmark=bm, model_id=model_config.id)
+        for rt in runtimes:
+            is_tq = any(rt.id.startswith(p) for p in TQ_RUNTIME_PREFIXES)
+            n_parallel = 1 if (is_tq and args.parallel is None) else base_parallel
 
-            logger.info("")
-            logger.info("=" * 60)
-            logger.info("[%d/%d] %s × %s  (bits=%s, metric=%s, parallel=%d)",
-                        cell_num, total_cells, rt.id, bm.id,
-                        rt.bits, bm.metric, n_parallel)
-            logger.info("=" * 60)
+            for bm in benchmarks:
+                cell_key = make_cell_key(model_config.id, rt.id, bm.id)
 
-            force_kill_port(port)
+                if cell_key in completed_keys:
+                    with state_lock:
+                        progress_counter["done"] += 1
+                        logger.info(
+                            "[%d/%d] SKIP (resumed): %s :: %s × %s",
+                            progress_counter["done"], total_cells,
+                            model_config.id, rt.id, bm.id,
+                        )
+                    continue
 
-            try:
-                record = runner.run_cell(
-                    cell, model_config,
-                    gpu_id=gpu_id,
-                    port=port, seed=args.seed,
-                    parallel_requests=n_parallel,
-                )
-            except Exception as exc:
-                logger.error("FAILED: %s × %s — %s", rt.id, bm.id, exc)
-                from tq_bench.runner import RunRecord
-                record = RunRecord(
-                    runtime_id=rt.id,
-                    benchmark_id=bm.id,
-                    status="error",
+                cell = ExperimentCell(
+                    runtime=rt,
+                    benchmark=bm,
                     model_id=model_config.id,
-                    score=0.0,
-                    notes=f"Exception: {exc}",
                 )
 
-            scores[rt.id][bm.id] = record.score
-            rec_dict = record.to_dict()
-            rec_dict["runtime_config"] = {
-                "cache_type_k": rt.cache_type_k,
-                "cache_type_v": rt.cache_type_v,
-                "bits": rt.bits,
-                "method": rt.method,
-            }
-            rec_dict["metric_used"] = bm.metric
-            rec_dict["is_parity"] = bm.id in PARITY_METRICS
-            all_records.append(rec_dict)
+                logger.info("")
+                logger.info("=" * 60)
+                logger.info(
+                    "[lane=%s gpu=%s port=%d] %s × %s  (bits=%s, metric=%s, parallel=%d)",
+                    model_config.id,
+                    model_gpu_id,
+                    model_port,
+                    rt.id,
+                    bm.id,
+                    rt.bits,
+                    bm.metric,
+                    n_parallel,
+                )
+                logger.info("=" * 60)
 
-            logger.info("  => status=%s  score=%.3f  time=%.0fs  ok=%d/%d",
-                        record.status, record.score or 0,
+                force_kill_port(model_port)
+
+                try:
+                    record = runner.run_cell(
+                        cell,
+                        model_config,
+                        gpu_id=model_gpu_id,
+                        port=model_port,
+                        seed=args.seed,
+                        parallel_requests=n_parallel,
+                        progress_position=lane_idx,
+                    )
+                except Exception as exc:
+                    logger.error(
+                        "FAILED: %s :: %s × %s — %s",
+                        model_config.id,
+                        rt.id,
+                        bm.id,
+                        exc,
+                    )
+                    record = RunRecord(
+                        runtime_id=rt.id,
+                        benchmark_id=bm.id,
+                        status="error",
+                        model_id=model_config.id,
+                        score=0.0,
+                        notes=f"Exception: {exc}",
+                    )
+
+                rec_dict = record.to_dict()
+                rec_dict["runtime_config"] = {
+                    "cache_type_k": rt.cache_type_k,
+                    "cache_type_v": rt.cache_type_v,
+                    "bits": rt.bits,
+                    "method": rt.method,
+                }
+                rec_dict["metric_used"] = bm.metric
+                rec_dict["is_parity"] = bm.id in PARITY_METRICS
+
+                with state_lock:
+                    completed_keys.add(cell_key)
+                    scores[model_config.id][rt.id][bm.id] = (
+                        record.score if record.status == "ok" else None
+                    )
+                    statuses[model_config.id][rt.id][bm.id] = record.status
+                    all_records.append(rec_dict)
+                    progress_counter["done"] += 1
+                    logger.info(
+                        "[%d/%d] %s :: %s × %s => status=%s  score=%.3f  time=%.0fs  ok=%d/%d",
+                        progress_counter["done"],
+                        total_cells,
+                        model_config.id,
+                        rt.id,
+                        bm.id,
+                        record.status,
+                        record.score or 0,
                         record.wall_time_seconds,
-                        record.n_succeeded, record.n_samples)
+                        record.n_succeeded,
+                        record.n_samples,
+                    )
+                    _save_output(
+                        output_path,
+                        args,
+                        selected_models,
+                        runtimes,
+                        benchmarks,
+                        scores,
+                        statuses,
+                        all_records,
+                        time.monotonic() - t_global,
+                    )
 
-            # Incremental save
-            _save_output(output_path, args, model_config, port, runtimes, benchmarks,
-                         scores, all_records, time.monotonic() - t_global)
+    max_workers = len(selected_models) if len(selected_models) > 1 else 1
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = [
+            pool.submit(run_model_queue, lane_idx, model)
+            for lane_idx, model in enumerate(selected_models)
+        ]
+        for future in as_completed(futures):
+            future.result()
 
     total_time = time.monotonic() - t_global
 
     # Final save
-    _save_output(output_path, args, model_config, port, runtimes, benchmarks,
-                 scores, all_records, total_time)
+    _save_output(output_path, args, selected_models, runtimes, benchmarks,
+                 scores, statuses, all_records, total_time)
 
     # Print summary
-    _print_summary(runtimes, benchmarks, scores, args.num, model_config, total_time)
+    _print_summary(selected_models, runtimes, benchmarks, scores, statuses, args.num, total_time)
 
 
 # ---------------------------------------------------------------------------
 # Output
 # ---------------------------------------------------------------------------
 
-def _save_output(path, args, model_config, port, runtimes, benchmarks,
-                 scores, records, wall_time):
+def _save_output(path, args, model_configs, runtimes, benchmarks,
+                 scores, statuses, records, wall_time):
+    models_meta = [
+        {
+            "id": model.id,
+            "reasoning_mode": model.reasoning_mode,
+            "gpu_id": model.gpu_id,
+            "port": model.port,
+            "parallel_requests": model.parallel_requests,
+            "model_quantization": model.model_quantization,
+            "model_path": str(model.model_path),
+            "sampling_seed": model.sampling_seed,
+            "temperature": model.temperature,
+            "top_k": model.top_k,
+            "top_p": model.top_p,
+            "min_p": model.min_p,
+            "repeat_penalty": model.repeat_penalty,
+            "presence_penalty": model.presence_penalty,
+            "frequency_penalty": model.frequency_penalty,
+        }
+        for model in model_configs
+    ]
     output = {
         "meta": {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "git_commit": get_git_commit(),
-            "model": model_config.id,
-            "reasoning_mode": model_config.reasoning_mode,
-            "gpu_id": model_config.gpu_id,
-            "port": port,
+            "models": models_meta,
             "n_samples": args.num,
             "seed": args.seed,
             "runtimes": [rt.id for rt in runtimes],
@@ -431,6 +619,7 @@ def _save_output(path, args, model_config, port, runtimes, benchmarks,
             "total_wall_time": round(wall_time, 1),
         },
         "scores": scores,
+        "statuses": statuses,
         "records": records,
     }
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -438,88 +627,102 @@ def _save_output(path, args, model_config, port, runtimes, benchmarks,
         json.dump(output, f, indent=2, default=str)
 
 
-def _print_summary(runtimes, benchmarks, scores, n_samples, model_config, total_time):
+def _print_summary(model_configs, runtimes, benchmarks, scores, statuses, n_samples, total_time):
     bm_ids = [bm.id for bm in benchmarks]
 
-    print(f"\n{'=' * 90}")
-    print(f"TQ-VLM-Bench  (n={n_samples}, {model_config.id})")
-    print(f"{'=' * 90}")
+    for model_config in model_configs:
+        model_scores = scores.get(model_config.id, {})
+        model_statuses = statuses.get(model_config.id, {})
+        print(f"\n{'=' * 90}")
+        print(
+            f"TQ-VLM-Bench  (n={n_samples}, {model_config.id}, "
+            f"gpu={model_config.gpu_id}, port={model_config.port})"
+        )
+        print(f"{'=' * 90}")
 
-    # Header
-    header = f"{'Runtime':<14} {'Bits':<7}"
-    for bid in bm_ids:
-        w = max(len(bid), 8)
-        header += f" {bid:>{w}}"
-    header += f" {'Avg':>8}"
-    print(header)
-    print("-" * 90)
-
-    # Baseline row for delta computation
-    baseline_scores = scores.get("baseline", {})
-
-    for rt in runtimes:
-        row = f"{rt.id:<14} {rt.bits:<7}"
-        vals = []
+        header = f"{'Runtime':<14} {'Bits':<7}"
         for bid in bm_ids:
-            s = scores.get(rt.id, {}).get(bid)
             w = max(len(bid), 8)
-            if s is None:
-                row += f" {'---':>{w}}"
-            else:
-                vals.append(s)
-                # Show delta from baseline
-                bl = baseline_scores.get(bid)
-                if rt.id == "baseline":
-                    row += f" {s:>{w}.3f}"
-                elif bl is not None and bl > 0:
-                    delta = s - bl
-                    row += f" {s:>{w}.3f}"
-                else:
-                    row += f" {s:>{w}.3f}"
-
-        avg = sum(vals) / len(vals) if vals else 0
-        row += f" {avg:>8.3f}"
-        print(row)
-
-    # Delta row
-    if "baseline" in {rt.id for rt in runtimes} and len(runtimes) > 1:
+            header += f" {bid:>{w}}"
+        header += f" {'Avg':>8}"
+        print(header)
         print("-" * 90)
-        print("Delta from baseline:")
+
+        baseline_scores = model_scores.get("baseline", {})
+        baseline_statuses = model_statuses.get("baseline", {})
+
         for rt in runtimes:
-            if rt.id == "baseline":
-                continue
-            row = f"  {rt.id:<12} {'':7}"
-            deltas = []
+            row = f"{rt.id:<14} {rt.bits:<7}"
+            vals = []
             for bid in bm_ids:
-                s = scores.get(rt.id, {}).get(bid)
-                bl = baseline_scores.get(bid)
+                s = model_scores.get(rt.id, {}).get(bid)
+                status = model_statuses.get(rt.id, {}).get(bid)
                 w = max(len(bid), 8)
-                if s is not None and bl is not None:
-                    d = s - bl
-                    deltas.append(d)
-                    sign = "+" if d >= 0 else ""
-                    row += f" {sign}{d:>{w-1}.3f}"
+                if s is None:
+                    label = {
+                        "server_crash": "CRASH",
+                        "error": "ERROR",
+                        "fail": "FAIL",
+                    }.get(status, "---")
+                    row += f" {label:>{w}}"
                 else:
-                    row += f" {'---':>{w}}"
-            avg_d = sum(deltas) / len(deltas) if deltas else 0
-            sign = "+" if avg_d >= 0 else ""
-            row += f" {sign}{avg_d:>7.3f}"
+                    vals.append(s)
+                    row += f" {s:>{w}.3f}"
+
+            avg = sum(vals) / len(vals) if vals else 0
+            row += f" {avg:>8.3f}"
             print(row)
 
-    # Official comparison (P0 only)
-    p0_in_run = [bid for bid in bm_ids if bid in OFFICIAL_SCORES]
-    if p0_in_run and "baseline" in {rt.id for rt in runtimes}:
-        print("-" * 90)
-        print("Official comparison (baseline):")
-        for bid in p0_in_run:
-            ours = baseline_scores.get(bid)
-            off = OFFICIAL_SCORES[bid]
-            if ours is not None:
-                gap = ours - off
-                sign = "+" if gap >= 0 else ""
-                status = "OK" if abs(gap) <= 0.05 else "GAP"
-                print(f"  {bid:<12} ours={ours:.3f}  official={off:.3f}  "
-                      f"delta={sign}{gap:.3f}  [{status}]")
+        if "baseline" in {rt.id for rt in runtimes} and len(runtimes) > 1:
+            print("-" * 90)
+            print("Delta from baseline:")
+            for rt in runtimes:
+                if rt.id == "baseline":
+                    continue
+                row = f"  {rt.id:<12} {'':7}"
+                deltas = []
+                for bid in bm_ids:
+                    s = model_scores.get(rt.id, {}).get(bid)
+                    bl = baseline_scores.get(bid)
+                    status = model_statuses.get(rt.id, {}).get(bid)
+                    w = max(len(bid), 8)
+                    if s is not None and bl is not None:
+                        d = s - bl
+                        deltas.append(d)
+                        sign = "+" if d >= 0 else ""
+                        row += f" {sign}{d:>{w-1}.3f}"
+                    else:
+                        label = {
+                            "server_crash": "CRASH",
+                            "error": "ERROR",
+                            "fail": "FAIL",
+                        }.get(status, "---")
+                        row += f" {label:>{w}}"
+                avg_d = sum(deltas) / len(deltas) if deltas else 0
+                sign = "+" if avg_d >= 0 else ""
+                row += f" {sign}{avg_d:>7.3f}" if deltas else f" {'---':>8}"
+                print(row)
+
+        p0_in_run = [bid for bid in bm_ids if bid in OFFICIAL_SCORES]
+        if p0_in_run and "baseline" in {rt.id for rt in runtimes}:
+            print("-" * 90)
+            print("Official comparison (baseline):")
+            for bid in p0_in_run:
+                ours = baseline_scores.get(bid)
+                off = OFFICIAL_SCORES[bid]
+                if ours is not None:
+                    gap = ours - off
+                    sign = "+" if gap >= 0 else ""
+                    status = "OK" if abs(gap) <= 0.05 else "GAP"
+                    print(
+                        f"  {bid:<12} ours={ours:.3f}  official={off:.3f}  "
+                        f"delta={sign}{gap:.3f}  [{status}]"
+                    )
+                else:
+                    baseline_status = baseline_statuses.get(bid)
+                    print(
+                        f"  {bid:<12} ours={baseline_status or '---':>5}  official={off:.3f}  [NO SCORE]"
+                    )
 
     print("-" * 90)
     print(f"Total time: {total_time:.0f}s ({total_time/60:.1f}min)")

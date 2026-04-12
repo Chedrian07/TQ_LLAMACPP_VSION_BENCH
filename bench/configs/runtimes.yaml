@@ -1,5 +1,5 @@
 defaults:
-  ctx_size: 32768
+  ctx_size: 16384
   flash_attn: true
   n_gpu_layers: 99
   temperature: 0.0
