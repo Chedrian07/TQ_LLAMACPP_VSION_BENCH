@@ -128,8 +128,17 @@ class MMMUOfficialEvaluator(BaseEvaluator):
                 if f" {choice} " in response:
                     candidates.append(choice)
 
-        # Priority 3: content matching (response > 5 tokens)
-        if len(candidates) == 0 and len(response.split()) > 5:
+        # Priority 2b: letter followed by delimiter like " D.", " A,"
+        # Catches short answers such as "D. Planned obsolescence"
+        if len(candidates) == 0:
+            for choice in all_choices:
+                for delim in (".", ",", ":", ";"):
+                    if f" {choice}{delim}" in response:
+                        candidates.append(choice)
+                        break
+
+        # Priority 3: content matching (response > 3 tokens)
+        if len(candidates) == 0 and len(response.split()) > 3:
             for index, ans in index2ans.items():
                 if ans.lower() in response.lower():
                     candidates.append(index)
@@ -218,6 +227,10 @@ class MMMUOfficialEvaluator(BaseEvaluator):
         boundaries, look for indicator phrases, extract tails.
         """
         candidates: list[str] = []
+
+        # Extract \boxed{...} content (common in math/CoT models)
+        for m in re.finditer(r"\\boxed\{([^}]+)\}", response):
+            candidates.append(m.group(1).strip())
 
         # Split on ". " followed by uppercase or newlines
         sentences = re.split(r"(?<=[.!?])\s+(?=[A-Z])|\n+", response.strip())
