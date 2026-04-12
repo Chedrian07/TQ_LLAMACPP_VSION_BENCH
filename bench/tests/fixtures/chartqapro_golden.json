@@ -1,0 +1,73 @@
+[
+  {
+    "name": "numeric_5pct_pass",
+    "prediction": "42",
+    "reference": "40",
+    "metadata": {"question_type": "Open-ended", "year_flags": null},
+    "expected": 1.0
+  },
+  {
+    "name": "numeric_5pct_fail",
+    "prediction": "50",
+    "reference": "40",
+    "metadata": {"question_type": "Open-ended", "year_flags": null},
+    "expected": 0.0
+  },
+  {
+    "name": "fact_checking_exact_pass",
+    "prediction": "Yes",
+    "reference": "yes",
+    "metadata": {"question_type": "Fact Checking", "year_flags": null},
+    "expected": 1.0
+  },
+  {
+    "name": "fact_checking_exact_fail",
+    "prediction": "No",
+    "reference": "yes",
+    "metadata": {"question_type": "Fact Checking", "year_flags": null},
+    "expected": 0.0
+  },
+  {
+    "name": "multi_choice_exact",
+    "prediction": "Option B",
+    "reference": "option b",
+    "metadata": {"question_type": "Multi Choice", "year_flags": null},
+    "expected": 1.0
+  },
+  {
+    "name": "year_flag_exact_pass",
+    "prediction": "2020",
+    "reference": "2020",
+    "metadata": {"question_type": "Open-ended", "year_flags": ["YES"]},
+    "expected": 1.0
+  },
+  {
+    "name": "year_flag_exact_fail",
+    "prediction": "2019",
+    "reference": "2020",
+    "metadata": {"question_type": "Open-ended", "year_flags": ["YES"]},
+    "expected": 0.0
+  },
+  {
+    "name": "text_anls_fallback",
+    "prediction": "pariss",
+    "reference": "paris",
+    "metadata": {"question_type": "Open-ended", "year_flags": null},
+    "expected_min": 0.5,
+    "expected_max": 1.0
+  },
+  {
+    "name": "percent_strip",
+    "prediction": "42%",
+    "reference": "40%",
+    "metadata": {"question_type": "Open-ended", "year_flags": null},
+    "expected": 1.0
+  },
+  {
+    "name": "zero_special",
+    "prediction": "0",
+    "reference": "0",
+    "metadata": {"question_type": "Open-ended", "year_flags": null},
+    "expected": 1.0
+  }
+]

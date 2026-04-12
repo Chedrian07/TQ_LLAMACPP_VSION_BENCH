@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from typing import Any
 
 from .base import BaseEvaluator
 
@@ -177,7 +178,7 @@ class OptionMatchEvaluator(BaseEvaluator):
 
     metric_name = "option_match"
 
-    def score(self, prediction: str, reference) -> float:
+    def score(self, prediction: str, reference, *, metadata: dict[str, Any] | None = None) -> float:
         if prediction is None or reference is None:
             return 0.0
 

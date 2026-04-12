@@ -35,22 +35,23 @@ uv sync
 ## Quick start
 
 ```bash
-# Smoke test a few cells
+# Smoke test a few cells across both configured models
 uv run python smoke_test.py --runtime baseline --runtime tq-3 \
   --benchmark commonsenseqa --n 3
 
-# Full matrix via notebook
+# Full mixed-model matrix via notebook
 uv run jupyter lab notebooks/02_full_run.ipynb
 ```
 
 ## Design notes
 
 - `llama-server` is launched per cell with `--cache-type-k` / `--cache-type-v` derived from the runtime config (`turbo*`, `turbop*`, `q4_0`, `f16`, ...).
+- `models.yaml` can now carry execution-lane hints (`gpu_id`, `port`, `parallel_requests`) so different models can be pinned to different GPUs.
 - The orchestrator checkpoints each completed cell to `results/runs/<ts>/checkpoint.json` for resume.
-- Dual-GPU mode launches two servers on ports 8080/8081 (GPU 0/1) and dispatches cells through a 2-worker pool.
+- In mixed-model dual-GPU mode, Thinking is pinned to GPU 0 / port 8080 and Instruct to GPU 1 / port 8081 by default; the orchestrator routes each model to its configured lane.
 - `prod` (`tqp-*`) runtimes are expected to fail generation; the runner records this as a FAIL cell rather than raising.
 - All seeds default to 42. Temperature is pinned to 0.0.
 
 ## Configuration
 
-Edit `configs/runtimes.yaml` to add or disable runtimes, `configs/benchmarks.yaml` to adjust sample counts `N`, and `configs/models.yaml` to point at local GGUF files. Matrix expansion is driven entirely from these files — no code changes needed for new combinations.
+Edit `configs/runtimes.yaml` to add or disable runtimes, `configs/benchmarks.yaml` to adjust sample counts `N`, and `configs/models.yaml` to point at local GGUF files and tune model lane placement. Mixed-model matrix expansion is driven from these files plus `OrchestratorConfig.model_ids`.

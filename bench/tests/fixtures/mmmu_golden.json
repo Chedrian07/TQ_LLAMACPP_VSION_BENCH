@@ -1,0 +1,86 @@
+[
+  {
+    "name": "mcq_basic_bracket",
+    "prediction": "The answer is (C)",
+    "reference": ["C", "$8"],
+    "metadata": {"is_mcq": true, "question_type": "multiple-choice", "options": ["$6", "$7", "$8", "$9"], "id": "t1"},
+    "expected": 1.0
+  },
+  {
+    "name": "mcq_rfind_last_wins",
+    "prediction": "I first thought (A) but then realized (C) is correct",
+    "reference": ["C", "$8"],
+    "metadata": {"is_mcq": true, "question_type": "multiple-choice", "options": ["$6", "$7", "$8", "$9"], "id": "t2"},
+    "expected": 1.0
+  },
+  {
+    "name": "mcq_space_letter",
+    "prediction": "After analysis the answer is clearly B among the options",
+    "reference": ["B", "$7"],
+    "metadata": {"is_mcq": true, "question_type": "multiple-choice", "options": ["$6", "$7", "$8", "$9"], "id": "t3"},
+    "expected": 1.0
+  },
+  {
+    "name": "mcq_content_match",
+    "prediction": "Based on the calculation the total cost would be $8 so that is the answer to this question",
+    "reference": ["C", "$8"],
+    "metadata": {"is_mcq": true, "question_type": "multiple-choice", "options": ["$6", "$7", "$8", "$9"], "id": "t4"},
+    "expected": 1.0
+  },
+  {
+    "name": "mcq_wrong_letter",
+    "prediction": "(A)",
+    "reference": ["C", "$8"],
+    "metadata": {"is_mcq": true, "question_type": "multiple-choice", "options": ["$6", "$7", "$8", "$9"], "id": "t5"},
+    "expected": 0.0
+  },
+  {
+    "name": "mcq_single_letter_no_bracket",
+    "prediction": "D",
+    "reference": ["D", "$9"],
+    "metadata": {"is_mcq": true, "question_type": "multiple-choice", "options": ["$6", "$7", "$8", "$9"], "id": "t6"},
+    "expected": 1.0
+  },
+  {
+    "name": "open_numeric_round",
+    "prediction": "The answer is 3.14159",
+    "reference": "3.14",
+    "metadata": {"is_mcq": false, "question_type": "open", "options": [], "id": "t7"},
+    "expected": 1.0
+  },
+  {
+    "name": "open_string_containment",
+    "prediction": "The result is definitely Paris based on the evidence",
+    "reference": "paris",
+    "metadata": {"is_mcq": false, "question_type": "open", "options": [], "id": "t8"},
+    "expected": 1.0
+  },
+  {
+    "name": "open_no_match",
+    "prediction": "Tokyo",
+    "reference": "Paris",
+    "metadata": {"is_mcq": false, "question_type": "open", "options": [], "id": "t9"},
+    "expected": 0.0
+  },
+  {
+    "name": "open_integer_exact",
+    "prediction": "The answer is 42",
+    "reference": "42",
+    "metadata": {"is_mcq": false, "question_type": "open", "options": [], "id": "t10"},
+    "expected": 1.0
+  },
+  {
+    "name": "open_list_reference",
+    "prediction": "I think it is 24/7",
+    "reference": ["24/7", "3.429"],
+    "metadata": {"is_mcq": false, "question_type": "open", "options": [], "id": "t11"},
+    "expected": 1.0
+  },
+  {
+    "name": "empty_prediction",
+    "prediction": "",
+    "reference": "A",
+    "metadata": {"is_mcq": true, "question_type": "multiple-choice", "options": ["x", "y"], "id": "t12"},
+    "expected": 0.0
+  }
+]

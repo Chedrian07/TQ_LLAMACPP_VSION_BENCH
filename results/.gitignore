@@ -1,0 +1,12 @@
+*
+!.gitignore
+!runs/
+!reports/
+!kv_dumps/
+runs/*
+!runs/.gitkeep
+reports/*
+!reports/.gitkeep
+kv_dumps/*
+!kv_dumps/.gitkeep
+

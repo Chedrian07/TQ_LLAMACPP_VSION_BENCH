@@ -162,8 +162,15 @@ class ChartQAProDataset(BaseBenchmarkDataset):
             questions: list[str] = row["Question"]
             answers: list[str] = row["Answer"]
             img_data = row["image"]  # raw bytes
-            for q, a in zip(questions, answers):
-                flat.append({"question": q, "answer": a, "image_bytes": img_data})
+            q_type = row.get("Type", "")
+            year_col = row.get("Year", [])
+            for i, (q, a) in enumerate(zip(questions, answers)):
+                yr_flag = year_col[i] if isinstance(year_col, list) and i < len(year_col) else None
+                flat.append({
+                    "question": q, "answer": a, "image_bytes": img_data,
+                    "question_type": q_type,
+                    "year_flags": [yr_flag] if yr_flag is not None else None,
+                })
 
         # Deterministic sampling from the flattened list
         import random as _random
@@ -193,6 +200,8 @@ class ChartQAProDataset(BaseBenchmarkDataset):
                     "image": image,
                     "question": prompt,
                     "answer": item["answer"],
+                    "question_type": item.get("question_type", ""),
+                    "year_flags": item.get("year_flags"),
                 }
             )
         self._loaded = True

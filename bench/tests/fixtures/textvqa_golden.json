@@ -1,0 +1,56 @@
+[
+  {
+    "name": "all_same_10",
+    "prediction": "paris",
+    "reference": ["paris", "paris", "paris", "paris", "paris", "paris", "paris", "paris", "paris", "paris"],
+    "expected": 1.0
+  },
+  {
+    "name": "majority_6_of_10",
+    "prediction": "paris",
+    "reference": ["paris", "paris", "paris", "paris", "paris", "paris", "london", "london", "london", "london"],
+    "expected": 1.0
+  },
+  {
+    "name": "no_match",
+    "prediction": "berlin",
+    "reference": ["paris", "paris", "paris", "paris", "paris", "paris", "paris", "paris", "paris", "paris"],
+    "expected": 0.0
+  },
+  {
+    "name": "number_word_one",
+    "prediction": "one",
+    "reference": ["1", "1", "1", "1", "1", "1", "1", "1", "1", "1"],
+    "expected": 1.0
+  },
+  {
+    "name": "number_word_two",
+    "prediction": "two",
+    "reference": ["2", "2", "2", "2", "2", "2", "2", "2", "2", "2"],
+    "expected": 1.0
+  },
+  {
+    "name": "article_removal",
+    "prediction": "the white house",
+    "reference": ["white house", "white house", "white house", "white house", "white house", "white house", "white house", "white house", "white house", "white house"],
+    "expected": 1.0
+  },
+  {
+    "name": "case_insensitive",
+    "prediction": "STOP",
+    "reference": ["stop", "stop", "stop", "stop", "stop", "stop", "stop", "stop", "stop", "stop"],
+    "expected": 1.0
+  },
+  {
+    "name": "partial_consensus_3_of_10",
+    "prediction": "cat",
+    "reference": ["cat", "cat", "cat", "dog", "dog", "dog", "dog", "dog", "dog", "dog"],
+    "expected": 0.9
+  },
+  {
+    "name": "single_ref_fallback",
+    "prediction": "hello",
+    "reference": ["hello"],
+    "expected": 1.0
+  }
+]

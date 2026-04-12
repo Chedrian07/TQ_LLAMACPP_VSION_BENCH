@@ -60,8 +60,8 @@ class LlamaServer:
         ]
         if self.launch_config.mmproj_path is not None:
             cmd.extend(["--mmproj", str(self.launch_config.mmproj_path)])
-        if gpu_id is not None:
-            cmd.extend(["--gpu-id", str(gpu_id)])
+        # Disable prompt cache to save VRAM.
+        cmd.extend(["--cache-ram", "0"])
         return cmd
 
     # ------------------------------------------------------------------
@@ -125,11 +125,25 @@ class LlamaServer:
         )
         logger.debug("Command: %s", " ".join(cmd))
 
+        # Pin to a specific GPU via CUDA_VISIBLE_DEVICES.
+        # On WSL2 with mixed GPUs (e.g. RTX 5070 Ti + RTX 4060 Ti):
+        #   - --main-gpu fails: WSL2 duplicate PCI bus IDs cause llama.cpp
+        #     to deduplicate GPUs, so only device 0 is available.
+        #   - --device CUDAX fails: NCCL ncclCommInitAll() crashes during
+        #     ggml_cuda_init() before device selection is even reached.
+        #   - CUDA_VISIBLE_DEVICES=N works: prevents multi-GPU NCCL init
+        #     entirely, making only the selected GPU visible to CUDA.
+        proc_env = os.environ.copy()
+        if gpu_id is not None:
+            proc_env["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
+            logger.info("Pinning to GPU %d via CUDA_VISIBLE_DEVICES=%d", gpu_id, gpu_id)
+
         self.proc = Popen(
             cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+            env=proc_env,
         )
 
         # Wait for health ---------------------------------------------------

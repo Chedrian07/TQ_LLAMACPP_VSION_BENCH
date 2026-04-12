@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import string
 import unicodedata
+from typing import Any
 
 from .base import BaseEvaluator
 
@@ -146,7 +147,7 @@ class ANLSEvaluator(BaseEvaluator):
 
     metric_name = "anls"
 
-    def score(self, prediction: str, reference: str | list[str]) -> float:
+    def score(self, prediction: str, reference: str | list[str], *, metadata: dict[str, Any] | None = None) -> float:
         """Return ANLS score.
 
         *reference* may be a single string or a list of acceptable ground
@@ -180,7 +181,7 @@ class RelaxedAccuracyEvaluator(BaseEvaluator):
 
     metric_name = "relaxed_accuracy"
 
-    def score(self, prediction: str, reference: str | list[str]) -> float:
+    def score(self, prediction: str, reference: str | list[str], *, metadata: dict[str, Any] | None = None) -> float:
         if isinstance(reference, str):
             references = [reference]
         else:
@@ -214,7 +215,7 @@ class ExactMatchEvaluator(BaseEvaluator):
 
     metric_name = "exact_match"
 
-    def score(self, prediction: str, reference: str | list[str]) -> float:
+    def score(self, prediction: str, reference: str | list[str], *, metadata: dict[str, Any] | None = None) -> float:
         if isinstance(reference, str):
             references = [reference]
         else:
@@ -241,7 +242,7 @@ class NormalizedExactMatchEvaluator(BaseEvaluator):
 
     metric_name = "normalized_exact_match"
 
-    def score(self, prediction: str, reference: str | list[str]) -> float:
+    def score(self, prediction: str, reference: str | list[str], *, metadata: dict[str, Any] | None = None) -> float:
         if isinstance(reference, str):
             references = [reference]
         else:
@@ -321,7 +322,7 @@ class MathVistaMatchEvaluator(BaseEvaluator):
 
     metric_name = "mathvista_match"
 
-    def score(self, prediction: str, reference: str | list[str]) -> float:
+    def score(self, prediction: str, reference: str | list[str], *, metadata: dict[str, Any] | None = None) -> float:
         if isinstance(reference, str):
             references = [reference]
         else:
@@ -436,5 +437,5 @@ class VqaEvaluator(BaseEvaluator):
         self.metric_name = metric_name
         self._delegate = _METRIC_EVALUATORS[metric_name]()
 
-    def score(self, prediction: str, reference: str | list[str]) -> float:
-        return self._delegate.score(prediction, reference)
+    def score(self, prediction: str, reference: str | list[str], *, metadata: dict[str, Any] | None = None) -> float:
+        return self._delegate.score(prediction, reference, metadata=metadata)

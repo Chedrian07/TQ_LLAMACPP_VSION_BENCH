@@ -1,0 +1,79 @@
+[
+  {
+    "name": "mc_letter_to_text",
+    "prediction": "The answer is C",
+    "reference": ["C", "45"],
+    "metadata": {"question_type": "multi_choice", "answer_type": "text", "precision": null, "choices": ["15", "30", "45", "60"]},
+    "expected": 1.0
+  },
+  {
+    "name": "mc_levenshtein_fuzzy",
+    "prediction": "The answer is Pari",
+    "reference": ["A", "Paris"],
+    "metadata": {"question_type": "multi_choice", "answer_type": "text", "precision": null, "choices": ["Paris", "London", "Berlin", "Madrid"]},
+    "expected": 1.0
+  },
+  {
+    "name": "mc_paren_letter",
+    "prediction": "I choose (B) as my answer",
+    "reference": ["B", "30"],
+    "metadata": {"question_type": "multi_choice", "answer_type": "text", "precision": null, "choices": ["15", "30", "45", "60"]},
+    "expected": 1.0
+  },
+  {
+    "name": "mc_wrong",
+    "prediction": "The answer is A",
+    "reference": ["C", "45"],
+    "metadata": {"question_type": "multi_choice", "answer_type": "text", "precision": null, "choices": ["15", "30", "45", "60"]},
+    "expected": 0.0
+  },
+  {
+    "name": "integer_coercion",
+    "prediction": "The answer is 42.7",
+    "reference": "42",
+    "metadata": {"question_type": "free_form", "answer_type": "integer", "precision": null, "choices": []},
+    "expected": 1.0
+  },
+  {
+    "name": "integer_wrong",
+    "prediction": "The answer is 43",
+    "reference": "42",
+    "metadata": {"question_type": "free_form", "answer_type": "integer", "precision": null, "choices": []},
+    "expected": 0.0
+  },
+  {
+    "name": "float_precision_1",
+    "prediction": "The answer is 3.14",
+    "reference": "3.1",
+    "metadata": {"question_type": "free_form", "answer_type": "float", "precision": 1, "choices": []},
+    "expected": 1.0
+  },
+  {
+    "name": "float_strict_no_tolerance",
+    "prediction": "3.15",
+    "reference": "3.14",
+    "metadata": {"question_type": "free_form", "answer_type": "float", "precision": 2, "choices": []},
+    "expected": 0.0
+  },
+  {
+    "name": "float_precision_0",
+    "prediction": "The answer is 99.4",
+    "reference": "99.0",
+    "metadata": {"question_type": "free_form", "answer_type": "float", "precision": 0, "choices": []},
+    "expected": 1.0
+  },
+  {
+    "name": "text_exact",
+    "prediction": "yes",
+    "reference": "yes",
+    "metadata": {"question_type": "free_form", "answer_type": "text", "precision": null, "choices": []},
+    "expected": 1.0
+  },
+  {
+    "name": "text_wrong",
+    "prediction": "no",
+    "reference": "yes",
+    "metadata": {"question_type": "free_form", "answer_type": "text", "precision": null, "choices": []},
+    "expected": 0.0
+  }
+]

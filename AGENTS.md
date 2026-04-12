@@ -42,13 +42,17 @@ Primary patch targets:
 
 ### `bench/`
 
-Current scaffold already exists:
+The benchmark framework is fully implemented:
 
-- `configs/` for runtime, benchmark, and model YAML
-- `tq_bench/` for the Python package
+- `configs/` for runtime (15), benchmark (11), and model (2) YAML
+- `tq_bench/` Python package: runner, orchestrator, server, client, datasets×11, evaluators×10
+- `tq_bench/evaluators/` includes 4 **official parity evaluators** (`mmmu_official`, `mathvista_official`, `textvqa_official`, `chartqapro_official`) alongside 6 existing approximate evaluators
+- `tq_bench/kv_analysis/` for KV dump statistics and visualization (134 tests)
 - `notebooks/` for thin execution wrappers
-
-Most Python modules are scaffold-only and intentionally still contain `NotImplementedError`.
+- `reporters/` for CSV/JSON/markdown/chart export
+- `tests/` for golden parity evaluator tests (62 tests)
+- `run_bench.py` — unified CLI runner (`--num`, `--runtimes`, `--benchmarks`, `--model`, `--resume`)
+- `docs/OFFICIAL_PARITY_AUDIT.md` — per-benchmark parity gap analysis
 
 ## Project Goal
 
@@ -68,17 +72,26 @@ Main research claim to validate:
 - MSE-only TurboQuant can be benchmarked systematically on VLMs
 - prod/QJL variants likely fail in real generation despite decent cosine similarity
 
+## Current Status
+
+As of 2026-04-12, phases 1-8.5 are complete:
+
+- `llama.cpp/` contains TurboQuant MSE and prod GGML types, CUDA KV write/dequant
+  paths, flash-attention integration, KV dump tooling, and CLI wiring.
+- `bench/` contains a production benchmark framework with official parity evaluators
+  for P0 benchmarks (AI2D, MMMU, MathVista), parallel sample requests, dual-GPU
+  orchestration, checkpoint/resume, `<think>` strip for Thinking models,
+  and a unified CLI runner (`run_bench.py`).
+- 196 tests passing (62 parity golden + 134 KV analysis).
+- Parity smoke test completed: baseline × 3 VLM × n=10.
+
 ## Immediate Priorities
 
-Follow this order unless the user asks otherwise:
-
-1. Phase 1: add MSE TurboQuant GGML types to `llama.cpp`
-2. Phase 2: add prod/QJL GGML types
-3. Phase 3: add CUDA kernels
-4. Phase 4: wire KV cache CLI and runtime integration
-5. Phase 5: implement the Python benchmark framework in `bench/`
-6. Phase 6: run smoke tests, then full benchmarks
-7. Phase 7: export analysis and reports
+1. Phase 9: run `run_bench.py --num 100` to reproduce official VLM baseline scores
+   and compare TurboQuant variants
+2. Phase 10: consolidate prod/QJL corrected CUDA results
+3. Phase 11: run `Qwen3-VL-2B-Thinking` KV-length experiments
+4. Phase 12+: expand to the full runtime × benchmark matrix
 
 ## Working Rules
 
@@ -130,6 +143,25 @@ uv run jupyter lab
 
 ```bash
 python3 -m compileall bench/tq_bench
+cd bench && uv run pytest tests/ -q          # 62 parity evaluator tests
+cd bench && uv run pytest tq_bench/kv_analysis/tests/ -q  # 134 KV analysis tests
+```
+
+### Running benchmarks
+
+```bash
+cd bench
+# Quick smoke (10 samples, 5 core runtimes, P0 benchmarks)
+uv run python run_bench.py --num 10
+
+# Full P0 run (100 samples)
+uv run python run_bench.py --num 100
+
+# All runtimes × all benchmarks
+uv run python run_bench.py --num 100 --runtimes all --benchmarks all
+
+# Thinking model
+uv run python run_bench.py --num 30 --model qwen3_vl_2b_thinking
 ```
 
 ## Notes For Agents
@@ -138,5 +170,5 @@ python3 -m compileall bench/tq_bench
 - Prefer small, verifiable increments because both `llama.cpp` kernel work and benchmark orchestration are easy to break.
 - If you touch `llama.cpp` quantization paths, verify both build integrity and the affected runtime CLI wiring.
 - If you touch `bench/`, verify config loading and package importability before moving on.
+- Prefer validating `bench/` changes with `python3 -m compileall bench/tq_bench` and targeted `pytest` where practical.
 - If the user asks only for scaffolding or layout work, do not jump ahead into algorithm implementation without instruction.
-

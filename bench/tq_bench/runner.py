@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -37,11 +38,12 @@ class SampleResult:
 
 @dataclass
 class RunRecord:
-    """Complete record for a single experiment cell (runtime x benchmark)."""
+    """Complete record for a single experiment cell (model x runtime x benchmark)."""
 
     runtime_id: str
     benchmark_id: str
     status: str  # "ok", "fail", "server_crash", "error"
+    model_id: str = ""
     score: float | None = None
     n_samples: int = 0
     n_succeeded: int = 0
@@ -56,6 +58,8 @@ class RunRecord:
 
     @property
     def cell_id(self) -> str:
+        if self.model_id:
+            return f"{self.model_id}_{self.runtime_id}_{self.benchmark_id}"
         return f"{self.runtime_id}_{self.benchmark_id}"
 
 
@@ -98,25 +102,9 @@ def _get_dataset(benchmark_id: str) -> BaseBenchmarkDataset:
 
 
 def _get_evaluator(metric_name: str) -> Any:
-    """Resolve a metric name to an evaluator instance."""
-    from .evaluators.mcq import OptionMatchEvaluator
-    from .evaluators.vqa import VqaEvaluator
-
-    mcq_metrics = {"option_match"}
-    vqa_metrics = {
-        "anls",
-        "exact_match",
-        "mathvista_match",
-        "normalized_exact_match",
-        "relaxed_accuracy",
-    }
-
-    if metric_name in mcq_metrics:
-        return OptionMatchEvaluator()
-    if metric_name in vqa_metrics:
-        return VqaEvaluator(metric_name)
-
-    raise ValueError(f"Unknown metric: {metric_name}")
+    """Resolve a metric name to an evaluator instance via the central registry."""
+    from .evaluators import get_evaluator
+    return get_evaluator(metric_name)
 
 
 # ---------------------------------------------------------------------------
@@ -239,6 +227,7 @@ class BenchmarkRunner:
                 runtime_id=runtime.id,
                 benchmark_id=benchmark.id,
                 status="error",
+                model_id=model_config.id,
                 score=0.0,
                 wall_time_seconds=wall_time,
                 notes=f"Server start failed: {exc}",
@@ -256,6 +245,7 @@ class BenchmarkRunner:
                 runtime_id=runtime.id,
                 benchmark_id=benchmark.id,
                 status="error",
+                model_id=model_config.id,
                 score=0.0,
                 wall_time_seconds=wall_time,
                 notes=f"Dataset load failed: {exc}",
@@ -278,7 +268,7 @@ class BenchmarkRunner:
         # threads complete out of order.
         sample_results: list[SampleResult | None] = [None] * n_samples
         server_crashed_flag = threading.Event()
-        desc = f"{runtime.id} x {benchmark.id}"
+        desc = f"{model_config.id}:{runtime.id} x {benchmark.id}"
 
         # Effective max_tokens: benchmark-defined value, bumped by the
         # model's override floor if set (e.g. Thinking models need 4096).
@@ -413,6 +403,7 @@ class BenchmarkRunner:
             runtime_id=runtime.id,
             benchmark_id=benchmark.id,
             status=status,
+            model_id=model_config.id,
             score=aggregate_score,
             n_samples=len(sample_results),
             n_succeeded=n_succeeded,
@@ -424,7 +415,7 @@ class BenchmarkRunner:
 
         logger.info(
             "Cell %s x %s finished: status=%s, score=%.4f, "
-            "time=%.1fs, succeeded=%d/%d",
+            "time=%.1fs, succeeded=%d/%d, model=%s",
             runtime.id,
             benchmark.id,
             status,
@@ -432,6 +423,7 @@ class BenchmarkRunner:
             wall_time,
             n_succeeded,
             len(sample_results),
+            model_config.id,
         )
 
         return record
@@ -544,7 +536,7 @@ class BenchmarkRunner:
             )
 
         try:
-            sample_score = evaluator.score(prediction, reference)
+            sample_score = evaluator.score(prediction, reference, metadata=sample)
         except Exception as eval_exc:  # noqa: BLE001
             logger.warning(
                 "Evaluation error for sample %s: %s", sample_id, eval_exc
@@ -617,13 +609,30 @@ class BenchmarkRunner:
 
     @staticmethod
     def _extract_content(response: dict[str, Any]) -> str:
-        """Extract the assistant's text content from a chat completion response."""
+        """Extract the assistant's text content from a chat completion response.
+
+        If the response contains a ``<think>...</think>`` reasoning block
+        (Qwen3-VL-Thinking and similar models), only the text AFTER the
+        closing ``</think>`` tag is returned.  This prevents evaluators
+        from accidentally matching letters or values mentioned during
+        intermediate reasoning steps.
+        """
         try:
             choices = response.get("choices", [])
             if not choices:
                 return ""
             message = choices[0].get("message", {})
             content = message.get("content", "")
-            return content.strip() if isinstance(content, str) else str(content).strip()
+            text = content.strip() if isinstance(content, str) else str(content).strip()
         except (KeyError, IndexError, TypeError):
             return ""
+
+        # Strip <think>...</think> blocks — keep only final answer
+        if "</think>" in text:
+            text = text.rsplit("</think>", 1)[-1].strip()
+        elif "<think>" in text and "</think>" not in text:
+            # Thinking block started but never closed (max_tokens truncation)
+            # — the entire response is reasoning with no final answer
+            text = ""
+
+        return text

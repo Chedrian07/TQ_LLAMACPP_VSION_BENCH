@@ -1,58 +1,91 @@
 benchmarks:
   # VLM benchmarks — need generous max_tokens since Qwen3-VL produces CoT-style answers
+
+  # P0: Official parity targets (AI2D, MMMU, MathVista)
   - id: ai2d
     type: vlm
     sample_count: 500
     metric: option_match
     max_tokens: 512
-  - id: chartqa
-    type: vlm
-    sample_count: 500
-    metric: relaxed_accuracy
-    max_tokens: 256
-  - id: chartqapro
-    type: vlm
-    sample_count: 500
-    metric: relaxed_accuracy
-    max_tokens: 256
-  - id: docvqa
-    type: vlm
-    sample_count: 500
-    metric: anls
-    max_tokens: 128
-  - id: mathvista
-    type: vlm
-    sample_count: 500
-    metric: mathvista_match
-    max_tokens: 512
+    parity_metric: option_match       # already near-parity
+    parity_sample_count: -1           # full 3088-sample test split
+
   - id: mmmu
     type: vlm
     sample_count: 500
     metric: option_match
     max_tokens: 1024  # MMMU STEM questions need long CoT
-  - id: ocrbench_v2
+    parity_metric: mmmu_official      # rfind, index2ans, random fallback, eval_open
+    parity_sample_count: -1           # full 900-sample validation
+
+  - id: mathvista
     type: vlm
     sample_count: 500
-    metric: exact_match
+    metric: mathvista_match
+    max_tokens: 512
+    parity_metric: mathvista_official  # precision-aware rounding, strict equality
+    parity_sample_count: -1           # full 1000-sample testmini
+
+  # P1: High-value VLM parity
+  - id: chartqa
+    type: vlm
+    sample_count: 500
+    metric: relaxed_accuracy
+    max_tokens: 256
+    parity_metric: relaxed_accuracy   # already near-parity
+    parity_sample_count: -1
+
+  - id: chartqapro
+    type: vlm
+    sample_count: 500
+    metric: relaxed_accuracy
+    max_tokens: 256
+    parity_metric: chartqapro_official  # question-type routing, year flags, ANLS fallback
+    parity_sample_count: -1
+
+  - id: docvqa
+    type: vlm
+    sample_count: 500
+    metric: anls
     max_tokens: 128
+    parity_metric: anls               # already near-parity
+    parity_sample_count: -1
+
   - id: textvqa
     type: vlm
     sample_count: 500
     metric: normalized_exact_match
     max_tokens: 64
-  # Text benchmarks
+    parity_metric: textvqa_official   # EvalAIAnswerProcessor, leave-one-out
+    parity_sample_count: -1
+
+  # P2: Approximate only (official parity not feasible — 30 task-type-specific metrics)
+  - id: ocrbench_v2
+    type: vlm
+    sample_count: 500
+    metric: exact_match
+    max_tokens: 128
+    # No parity_metric: official OCRBench-v2 requires 30 specialized metrics (TEDS, IoU, BLEU, etc.)
+    # Scores are approximate only and not comparable to official leaderboard.
+
+  # P3: Text sanity-check benchmarks (generation-based, not comparable to official logprob/loglikelihood)
   - id: mmlu
     type: text
     sample_count: 1000
     metric: option_match
     max_tokens: 256
+    # No parity_metric: official MMLU is 5-shot logprob ranking, not generation-based.
+
   - id: commonsenseqa
     type: text
     sample_count: 3000
     metric: option_match
     max_tokens: 128
+    # No parity_metric: official leaderboard uses blind test + evaluation script.
+
   - id: hellaswag
     type: text
     sample_count: 3000
     metric: option_match
     max_tokens: 128
+    # No parity_metric: official protocol is loglikelihood ranking, not generation MCQ.

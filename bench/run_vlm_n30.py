@@ -15,6 +15,9 @@ Benchmarks:
 
 Official reference scores (Qwen3-VL-2B-Instruct):
   AI2D=0.804, MMMU=0.614, MathVista=0.736
+
+Run 2: TQ runtimes use parallel=1 to avoid concurrency-related crashes.
+       Removed external pkill to prevent race with server start in run_cell.
 """
 
 from __future__ import annotations
@@ -56,13 +59,19 @@ BENCHMARK_IDS = ["ai2d", "mmmu", "mathvista"]
 MODEL_ID = "qwen3_vl_2b_instruct"
 N_SAMPLES = 30
 PORT = 8080
-PARALLEL_REQUESTS = 4
+# baseline/lcpp use parallel=4; TQ runtimes use parallel=1 to avoid
+# concurrency-related CUDA crashes observed in run 1
+PARALLEL_SAFE = 4
+PARALLEL_TQ = 1
 
 OFFICIAL_SCORES = {
     "ai2d": 0.804,
     "mmmu": 0.614,
     "mathvista": 0.736,
 }
+
+# TQ runtimes that need single-request mode
+TQ_RUNTIME_IDS = {"tq-4", "tq-K4V3", "tq-3", "tq-2", "tq-2h", "tq-3h"}
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -80,18 +89,6 @@ logger = logging.getLogger("vlm_bench")
 # Helpers
 # ---------------------------------------------------------------------------
 
-def kill_llama_servers():
-    """Kill any existing llama-server processes."""
-    try:
-        result = subprocess.run(
-            ["pkill", "-9", "-f", "llama-server"],
-            capture_output=True, text=True, timeout=5,
-        )
-    except Exception:
-        pass
-    time.sleep(1.0)
-
-
 def get_git_commit() -> str:
     try:
         result = subprocess.run(
@@ -102,6 +99,60 @@ def get_git_commit() -> str:
         return result.stdout.strip()
     except Exception:
         return "unknown"
+
+
+def wait_port_free(port: int, timeout: float = 15.0) -> None:
+    """Block until no process is listening on *port* (or timeout).
+
+    Uses lsof to check if any process has the port in LISTEN state.
+    Falls back to socket connect check.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        # Check with lsof first (most reliable)
+        try:
+            result = subprocess.run(
+                ["lsof", "-t", "-i", f"TCP:{port}", "-sTCP:LISTEN"],
+                capture_output=True, text=True, timeout=3,
+            )
+            pids = [p.strip() for p in result.stdout.strip().split() if p.strip().isdigit()]
+            if not pids:
+                return  # Port is free
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
+        time.sleep(1.0)
+    logger.warning("Port %d still occupied after %.0fs wait", port, timeout)
+
+
+def force_kill_port(port: int) -> None:
+    """Kill anything on *port* and wait for it to be free."""
+    try:
+        result = subprocess.run(
+            ["lsof", "-t", "-i", f"TCP:{port}", "-sTCP:LISTEN"],
+            capture_output=True, text=True, timeout=5,
+        )
+        pids = [int(p) for p in result.stdout.strip().split() if p.strip().isdigit()]
+        for pid in pids:
+            if pid == os.getpid():
+                continue
+            logger.info("Killing pid=%d on port %d", pid, port)
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except OSError:
+                pass
+        if pids:
+            time.sleep(1.0)
+            # Check if still alive, escalate to SIGKILL
+            for pid in pids:
+                try:
+                    os.kill(pid, 0)  # Check if alive
+                    os.kill(pid, signal.SIGKILL)
+                    logger.info("SIGKILL pid=%d", pid)
+                except OSError:
+                    pass
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+    wait_port_free(port, timeout=10.0)
 
 
 # ---------------------------------------------------------------------------
@@ -119,6 +170,8 @@ def main():
     runtimes_map = {rt.id: rt for rt in runtimes_all}
     benchmarks_map = {bm.id: bm for bm in benchmarks_all}
     model_config = models[MODEL_ID]
+    port = model_config.port or PORT
+    gpu_id = model_config.gpu_id
 
     # Filter to requested runtimes and benchmarks
     runtimes = [runtimes_map[rid] for rid in RUNTIME_IDS if rid in runtimes_map]
@@ -137,17 +190,17 @@ def main():
     logger.info("Runtimes: %s", [rt.id for rt in runtimes])
     logger.info("Benchmarks: %s", [bm.id for bm in benchmarks])
     logger.info("Model: %s", model_config.id)
+    logger.info("GPU: %s  Port: %d", gpu_id, port)
     logger.info("Server: %s", SERVER_BINARY)
-    logger.info("Port: %d, Parallel: %d", PORT, PARALLEL_REQUESTS)
     logger.info("=" * 70)
 
-    # Create runner
+    # Create runner with safe defaults
     runner = BenchmarkRunner(
         server_binary=SERVER_BINARY,
-        default_port=PORT,
+        default_port=port,
         request_timeout=180.0,
         max_retries=2,
-        parallel_requests=PARALLEL_REQUESTS,
+        parallel_requests=PARALLEL_SAFE,
     )
 
     # Run all cells
@@ -160,6 +213,10 @@ def main():
     cell_num = 0
 
     for rt in runtimes:
+        # Determine parallel level: TQ runtimes use 1 to avoid CUDA crashes
+        is_tq = rt.id in TQ_RUNTIME_IDS
+        n_parallel = PARALLEL_TQ if is_tq else PARALLEL_SAFE
+
         for bm_orig in benchmarks:
             cell_num += 1
 
@@ -172,25 +229,29 @@ def main():
                 max_tokens=bm_orig.max_tokens,
             )
 
-            cell = ExperimentCell(runtime=rt, benchmark=bm)
+            cell = ExperimentCell(runtime=rt, benchmark=bm, model_id=model_config.id)
 
             logger.info("")
             logger.info("=" * 60)
-            logger.info("[%d/%d] %s x %s (bits=%s, K=%s, V=%s)",
+            logger.info("[%d/%d] %s x %s (bits=%s, K=%s, V=%s, parallel=%d)",
                         cell_num, total_cells, rt.id, bm.id,
-                        rt.bits, rt.cache_type_k, rt.cache_type_v)
+                        rt.bits, rt.cache_type_k, rt.cache_type_v,
+                        n_parallel)
             logger.info("=" * 60)
 
-            # Kill any lingering servers before each cell
-            kill_llama_servers()
+            # Ensure port is free before starting the cell.
+            # run_cell() does its own _kill_existing_on_port() but the
+            # 0.5s wait there is not always sufficient.
+            force_kill_port(port)
 
             try:
                 record = runner.run_cell(
                     cell,
                     model_config,
-                    port=PORT,
+                    gpu_id=gpu_id,
+                    port=port,
                     seed=42,
-                    parallel_requests=PARALLEL_REQUESTS,
+                    parallel_requests=n_parallel,
                 )
             except Exception as exc:
                 logger.error("Cell %s x %s failed with exception: %s",
@@ -199,6 +260,7 @@ def main():
                     runtime_id=rt.id,
                     benchmark_id=bm.id,
                     status="error",
+                    model_id=model_config.id,
                     score=0.0,
                     notes=f"Exception: {exc}",
                 )
@@ -218,9 +280,6 @@ def main():
                         record.wall_time_seconds,
                         record.n_succeeded, record.n_samples)
 
-    # Kill server after all cells
-    kill_llama_servers()
-
     total_time = time.monotonic() - t_global_start
 
     # Build output JSON
@@ -230,10 +289,13 @@ def main():
             "git_commit": get_git_commit(),
             "model": model_config.id,
             "model_description": model_config.description,
+            "gpu_id": gpu_id,
+            "port": port,
             "runtimes_tested": RUNTIME_IDS,
             "benchmarks_tested": BENCHMARK_IDS,
             "n_samples": N_SAMPLES,
-            "parallel_requests": PARALLEL_REQUESTS,
+            "parallel_safe": PARALLEL_SAFE,
+            "parallel_tq": PARALLEL_TQ,
             "total_wall_time_seconds": round(total_time, 1),
             "official_reference_scores": OFFICIAL_SCORES,
         },
@@ -248,7 +310,7 @@ def main():
 
     # Print summary table
     print("\n" + "=" * 75)
-    print("VLM BENCHMARK RESULTS (n=%d, Qwen3-VL-2B-Instruct)" % N_SAMPLES)
+    print("VLM BENCHMARK RESULTS (n=%d, %s)" % (N_SAMPLES, model_config.description))
     print("=" * 75)
 
     header = f"{'Runtime':<14} {'Bits':<7}"

@@ -11,6 +11,10 @@ from .vqa import (
     RelaxedAccuracyEvaluator,
     VqaEvaluator,
 )
+from .mmmu_official import MMMUOfficialEvaluator
+from .mathvista_official import MathVistaOfficialEvaluator
+from .textvqa_official import TextVQAOfficialEvaluator
+from .chartqapro_official import ChartQAProOfficialEvaluator
 
 __all__ = [
     "BaseEvaluator",
@@ -28,6 +32,11 @@ _REGISTRY: dict[str, type[BaseEvaluator]] = {
     "exact_match": ExactMatchEvaluator,
     "normalized_exact_match": NormalizedExactMatchEvaluator,
     "mathvista_match": MathVistaMatchEvaluator,
+    # Official parity evaluators
+    "mmmu_official": MMMUOfficialEvaluator,
+    "mathvista_official": MathVistaOfficialEvaluator,
+    "textvqa_official": TextVQAOfficialEvaluator,
+    "chartqapro_official": ChartQAProOfficialEvaluator,
 }
 
 

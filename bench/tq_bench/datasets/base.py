@@ -44,10 +44,12 @@ class BaseBenchmarkDataset(ABC):
     def _deterministic_sample(dataset: Dataset, n: int, seed: int) -> Dataset:
         """Return a reproducible random subset of *dataset*.
 
-        If *n* >= len(dataset) the full dataset is returned (shuffled).
+        If *n* is -1 or >= len(dataset) the full dataset is returned
+        (shuffled).  ``n=-1`` is the sentinel for parity-mode "use the
+        full split".
         """
         shuffled = dataset.shuffle(seed=seed)
-        if n >= len(shuffled):
+        if n < 0 or n >= len(shuffled):
             return shuffled
         return shuffled.select(range(n))
 

@@ -25,6 +25,11 @@ class BenchmarkConfig:
     sample_count: int
     metric: str
     max_tokens: int = 256  # Per-benchmark generation budget
+    # Parity-mode fields: when parity_mode is True, use parity_metric and
+    # parity_sample_count instead of metric and sample_count.
+    parity_mode: bool = False
+    parity_metric: str | None = None
+    parity_sample_count: int | None = None  # -1 = full split
 
 
 @dataclass(frozen=True)
@@ -37,12 +42,17 @@ class ModelConfig:
     # Model-specific max_tokens override (e.g. Thinking models need more room)
     max_tokens_override: int | None = None
     reasoning_mode: str = "off"  # "off" | "think"  — informational
+    # Optional execution-lane hints for dual-GPU / mixed-model runs.
+    gpu_id: int | None = None
+    port: int | None = None
+    parallel_requests: int | None = None
 
 
 @dataclass(frozen=True)
 class ExperimentCell:
     runtime: RuntimeConfig
     benchmark: BenchmarkConfig
+    model_id: str = ""
 
 
 def _load_yaml(path: str | Path) -> dict[str, Any]:
@@ -82,16 +92,22 @@ def load_benchmarks(path: str | Path) -> list[BenchmarkConfig]:
     if not isinstance(benchmarks, list):
         raise TypeError("benchmarks must be a list")
 
-    return [
-        BenchmarkConfig(
-            id=item["id"],
-            task_type=item["type"],
-            sample_count=int(item["sample_count"]),
-            metric=item["metric"],
-            max_tokens=int(item.get("max_tokens", 256)),
+    result = []
+    for item in benchmarks:
+        psc = item.get("parity_sample_count")
+        result.append(
+            BenchmarkConfig(
+                id=item["id"],
+                task_type=item["type"],
+                sample_count=int(item["sample_count"]),
+                metric=item["metric"],
+                max_tokens=int(item.get("max_tokens", 256)),
+                parity_mode=bool(item.get("parity_mode", False)),
+                parity_metric=item.get("parity_metric"),
+                parity_sample_count=int(psc) if psc is not None else None,
+            )
         )
-        for item in benchmarks
-    ]
+    return result
 
 
 def load_models(path: str | Path) -> dict[str, ModelConfig]:
@@ -118,6 +134,13 @@ def load_models(path: str | Path) -> dict[str, ModelConfig]:
             description=item.get("description", ""),
             max_tokens_override=int(mto) if mto is not None else None,
             reasoning_mode=str(item.get("reasoning_mode", "off")),
+            gpu_id=int(item["gpu_id"]) if item.get("gpu_id") is not None else None,
+            port=int(item["port"]) if item.get("port") is not None else None,
+            parallel_requests=(
+                int(item["parallel_requests"])
+                if item.get("parallel_requests") is not None
+                else None
+            ),
         )
     return loaded
 
@@ -131,4 +154,3 @@ def build_matrix(
         for runtime in runtimes
         for benchmark in benchmarks
     ]
-

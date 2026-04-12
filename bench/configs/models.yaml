@@ -5,6 +5,9 @@ models:
     mmproj_path: ../../models/Qwen3-VL-2B-Instruct/mmproj.gguf
     description: Qwen3-VL-2B-Instruct BF16 GGUF
     reasoning_mode: off
+    gpu_id: 1
+    port: 8081
+    parallel_requests: 4
     # Instruct model uses benchmark-level max_tokens as-is
   qwen3_vl_2b_thinking:
     family: qwen3-vl
@@ -12,6 +15,9 @@ models:
     mmproj_path: ../../models/Qwen3-VL-2B-Thinking/mmproj.gguf
     description: Qwen3-VL-2B-Thinking BF16 GGUF
     reasoning_mode: think
+    gpu_id: 0
+    port: 8080
+    parallel_requests: 4
     # Thinking model emits long <think>...</think> reasoning chains;
     # floor max_tokens at 4096 even if benchmark says less.
     max_tokens_override: 4096
