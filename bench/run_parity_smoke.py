@@ -17,8 +17,11 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-_BUILD_BIN = "/home/kch3dri4n/lab/TQ_LLAMACPP_VSION_BENCH/llama.cpp/build/bin"
-os.environ.setdefault("LD_LIBRARY_PATH", _BUILD_BIN)
+from tq_bench.env import default_server_binary, prepend_ld_library_path, project_root_from
+
+_PROJECT = project_root_from(__file__)
+_BUILD_BIN = _PROJECT / "llama.cpp" / "build" / "bin"
+prepend_ld_library_path(_BUILD_BIN)
 
 from tq_bench.config import (
     BenchmarkConfig,
@@ -30,9 +33,9 @@ from tq_bench.config import (
 from tq_bench.evaluators import get_evaluator
 from tq_bench.runner import BenchmarkRunner
 
-BENCH_DIR = Path("/home/kch3dri4n/lab/TQ_LLAMACPP_VSION_BENCH/bench")
-SERVER_BINARY = Path("/home/kch3dri4n/lab/TQ_LLAMACPP_VSION_BENCH/llama.cpp/build/bin/llama-server")
-OUTPUT_PATH = Path("/home/kch3dri4n/lab/TQ_LLAMACPP_VSION_BENCH/results/runs/parity_smoke_n10.json")
+BENCH_DIR = Path(__file__).resolve().parent
+SERVER_BINARY = default_server_binary(_PROJECT)
+OUTPUT_PATH = _PROJECT / "results" / "runs" / "parity_smoke_n10.json"
 
 RUNTIME_ID = "baseline"
 MODEL_ID = "qwen3_vl_2b_instruct"

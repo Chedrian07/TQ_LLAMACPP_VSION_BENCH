@@ -143,6 +143,13 @@ class BenchmarkRunner:
         parallel_requests: Number of concurrent HTTP requests submitted to
             llama-server per cell. Matches the server's ``--parallel`` slot
             count (default 4).
+        batch_size: ``-b`` value passed to llama-server.
+        ubatch_size: ``-ub`` value passed to llama-server.
+        n_gpu_layers: ``-ngl`` value passed to llama-server.
+        cache_ram: ``--cache-ram`` value passed to llama-server.
+        slot_save_path: Optional ``--slot-save-path`` directory.
+        no_warmup: Whether to pass ``--no-warmup``.
+        no_mmap: Whether to pass ``--no-mmap``.
     """
 
     def __init__(
@@ -155,6 +162,13 @@ class BenchmarkRunner:
         max_retries: int = 2,
         max_tokens: int = 256,
         parallel_requests: int = 4,
+        batch_size: int = 512,
+        ubatch_size: int = 512,
+        n_gpu_layers: int = 99,
+        cache_ram: int = 16384,
+        slot_save_path: Path | None = Path("./kvcache"),
+        no_warmup: bool = True,
+        no_mmap: bool = True,
     ) -> None:
         self.server_binary = server_binary
         self.default_host = default_host
@@ -163,6 +177,13 @@ class BenchmarkRunner:
         self.max_retries = max_retries
         self.max_tokens = max_tokens
         self.parallel_requests = max(1, parallel_requests)
+        self.batch_size = batch_size
+        self.ubatch_size = ubatch_size
+        self.n_gpu_layers = n_gpu_layers
+        self.cache_ram = cache_ram
+        self.slot_save_path = slot_save_path
+        self.no_warmup = no_warmup
+        self.no_mmap = no_mmap
 
     def run_cell(
         self,
@@ -213,6 +234,13 @@ class BenchmarkRunner:
             host=self.default_host,
             port=port,
             n_parallel=n_parallel,
+            batch_size=self.batch_size,
+            ubatch_size=self.ubatch_size,
+            n_gpu_layers=self.n_gpu_layers,
+            cache_ram=self.cache_ram,
+            slot_save_path=self.slot_save_path,
+            no_warmup=self.no_warmup,
+            no_mmap=self.no_mmap,
         )
         server = LlamaServer(launch_config)
 
@@ -346,13 +374,14 @@ class BenchmarkRunner:
                                 n_failed_so_far,
                                 time.monotonic() - t_start,
                             )
-                            if not server_crashed_flag.is_set() and not server.is_healthy():
+                            if not server_crashed_flag.is_set() and server.poll() is not None:
                                 server_crashed_flag.set()
                                 logger.warning(
-                                    "Server crashed during %s x %s (detected during heartbeat, after %d completions)",
+                                    "Server crashed during %s x %s (detected during heartbeat, after %d completions, exit_code=%s)",
                                     runtime.id,
                                     benchmark.id,
                                     pbar.n,
+                                    server.poll(),
                                 )
                             if server_crashed_flag.is_set():
                                 for pending_fut in pending:
@@ -392,15 +421,16 @@ class BenchmarkRunner:
                         if (
                             not server_crashed_flag.is_set()
                             and pbar.n % 8 == 0
-                            and not server.is_healthy()
+                            and server.poll() is not None
                         ):
                             server_crashed_flag.set()
                             logger.warning(
                                 "Server crashed during %s x %s (detected after "
-                                "%d completions)",
+                                "%d completions, exit_code=%s)",
                                 runtime.id,
                                 benchmark.id,
                                 pbar.n,
+                                server.poll(),
                             )
 
                         if server_crashed_flag.is_set():
@@ -604,10 +634,14 @@ class BenchmarkRunner:
                     self.max_retries,
                     exc,
                 )
-                # If the server is down, flag a crash and stop retrying.
-                if not server.is_healthy():
+                # Only classify this as a server crash when the child process
+                # has actually exited. The health endpoint can fail
+                # transiently under heavy VLM load even while the server keeps
+                # processing in-flight requests.
+                exit_code = server.poll()
+                if exit_code is not None:
                     crash_flag.set()
-                    error_msg = f"Server crashed: {exc}"
+                    error_msg = f"Server crashed (exit_code={exit_code}): {exc}"
                     break
 
         if error_msg is not None and prediction == "":

@@ -108,7 +108,7 @@ Primary comparison axes:
 
 - NVIDIA GPU with CUDA compute capability sm_89 or sm_120 (tested on RTX 4060 Ti + RTX 5070 Ti)
 - CUDA Toolkit 12.x
-- Python 3.12+
+- Python 3.10+
 - [uv](https://github.com/astral-sh/uv)
 - 64GB RAM recommended (large text datasets and parallel runs)
 
@@ -157,6 +157,17 @@ uv run python verify_datasets.py
 ```
 
 ## Usage
+
+### Google Colab
+
+For a single-GPU Colab workflow, open [`bench/notebooks/00_colab_bench.ipynb`](bench/notebooks/00_colab_bench.ipynb) in Colab and run all cells.
+
+- The notebook clones the repo into `/content`
+- The notebook separately clones your custom `llama.cpp` fork and checks out the pinned commit before building
+- `bench/` is installed with `pip install -e`
+- `llama-server` is built once per custom `llama.cpp` remote + commit / CUDA arch and cached in Drive
+- GGUF/mmproj artifacts are cached in Drive and copied into the repo-local `models/` layout before each run
+- Results are written to Drive with resume support
 
 ### Smoke test
 

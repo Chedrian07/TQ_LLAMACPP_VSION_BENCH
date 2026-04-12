@@ -23,6 +23,24 @@ class TestOptionMatchEvaluator:
     def test_answer_is(self):
         assert self.ev.score("The answer is D.", "D") == 1.0
 
+    def test_lowercase_answer_phrase(self):
+        assert self.ev.score("The answer is b.", "B") == 1.0
+
+    def test_lowercase_final_answer_phrase(self):
+        assert self.ev.score("Final answer: b", "B") == 1.0
+
+    def test_lowercase_option_phrase(self):
+        assert self.ev.score("option b", "B") == 1.0
+
+    def test_lowercase_leading_letter(self):
+        assert self.ev.score("b. because it best fits", "B") == 1.0
+
+    def test_prefers_late_answer_over_earlier_revision(self):
+        assert self.ev.score("A\nBut after checking, B", "B") == 1.0
+
+    def test_does_not_parse_english_article_as_option(self):
+        assert self.ev.score("The answer is a person wearing glasses.", "A") == 0.0
+
     def test_metadata_none(self):
         assert self.ev.score("A", "A", metadata=None) == 1.0
 

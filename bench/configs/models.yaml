@@ -6,6 +6,21 @@ models:
       q8_0: ../../models/Qwen3-VL-2B-Instruct/Qwen3-VL-2B-Instruct-Q8_0.gguf
       q4_k_m: ../../models/Qwen3-VL-2B-Instruct/Qwen3-VL-2B-Instruct-Q4_K_M.gguf
     mmproj_path: ../../models/Qwen3-VL-2B-Instruct/mmproj.gguf
+    download:
+      repo_id: unsloth/Qwen3-VL-2B-Instruct-GGUF
+      files:
+        bf16:
+          filename: Qwen3-VL-2B-Instruct-BF16.gguf
+          suffix: BF16.gguf
+        q8_0:
+          filename: Qwen3-VL-2B-Instruct-Q8_0.gguf
+          suffix: Q8_0.gguf
+        q4_k_m:
+          filename: Qwen3-VL-2B-Instruct-Q4_K_M.gguf
+          suffix: Q4_K_M.gguf
+        mmproj:
+          filename: mmproj-BF16.gguf
+          suffix: mmproj.gguf
     description: Qwen3-VL-2B-Instruct BF16 GGUF
     reasoning_mode: "off"
     gpu_id: 1
@@ -29,6 +44,21 @@ models:
       q8_0: ../../models/Qwen3-VL-2B-Thinking/Qwen3-VL-2B-Thinking-Q8_0.gguf
       q4_k_m: ../../models/Qwen3-VL-2B-Thinking/Qwen3-VL-2B-Thinking-Q4_K_M.gguf
     mmproj_path: ../../models/Qwen3-VL-2B-Thinking/mmproj.gguf
+    download:
+      repo_id: unsloth/Qwen3-VL-2B-Thinking-GGUF
+      files:
+        bf16:
+          filename: Qwen3-VL-2B-Thinking-BF16.gguf
+          suffix: BF16.gguf
+        q8_0:
+          filename: Qwen3-VL-2B-Thinking-Q8_0.gguf
+          suffix: Q8_0.gguf
+        q4_k_m:
+          filename: Qwen3-VL-2B-Thinking-Q4_K_M.gguf
+          suffix: Q4_K_M.gguf
+        mmproj:
+          filename: mmproj-BF16.gguf
+          suffix: mmproj.gguf
     description: Qwen3-VL-2B-Thinking BF16 GGUF
     reasoning_mode: "think"
     gpu_id: 0

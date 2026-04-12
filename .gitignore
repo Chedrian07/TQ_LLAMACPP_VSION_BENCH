@@ -9,6 +9,9 @@ bench/.venv/
 *.gguf
 models/
 llama.cpp/build/
+llama.cpp/build-colab/
+kvcache/
+bench/kvcache/
 
 # Experiment outputs (regeneratable)
 results/kv_dumps/
@@ -22,4 +25,3 @@ results/reports/kv_analysis/plots/
 
 # PDFs (large, tracked separately if needed)
 pdfs/
-

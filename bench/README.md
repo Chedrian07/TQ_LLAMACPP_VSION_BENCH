@@ -32,6 +32,12 @@ bench/
 uv sync
 ```
 
+For a lightweight runtime install, especially in Colab:
+
+```bash
+python -m pip install -e .
+```
+
 ## Quick start
 
 ```bash
@@ -43,10 +49,25 @@ uv run python smoke_test.py --runtime baseline --runtime tq-3 \
 uv run jupyter lab notebooks/02_full_run.ipynb
 ```
 
+## Colab
+
+The canonical Colab entrypoint is [`notebooks/00_colab_bench.ipynb`](./notebooks/00_colab_bench.ipynb).
+
+- Scope: single GPU, single model, single notebook `Run all`
+- First run: clones the repo into `/content`, installs `bench/`, builds `llama-server`, downloads model artifacts, runs a smoke test, then launches the requested benchmark
+- The notebook also clones the custom `llama.cpp` fork separately and pins it to the configured branch/commit before building
+- Persistence: Drive cache under `tq_vlm_bench/`
+- Reuse: `llama-server` build artifacts are cached by custom `llama.cpp` remote + commit + CUDA arch + `nvcc --version`
+- Resume: the main output JSON is written to Drive and re-used on re-runs when `RESUME = True`
+
+Profiles are declared in `configs/profiles.yaml`. Use `--profile colab` from CLI or the Colab notebook defaults.
+
 ## Design notes
 
 - `llama-server` is launched per cell with `--cache-type-k` / `--cache-type-v` derived from the runtime config (`turbo*`, `turbop*`, `q4_0`, `f16`, ...).
 - `models.yaml` can now carry execution-lane hints (`gpu_id`, `port`, `parallel_requests`) so different models can be pinned to different GPUs.
+- `models.yaml` also carries remote download metadata so Colab/bootstrap helpers can fetch GGUF/mmproj artifacts without a second source of truth.
+- `profiles.yaml` provides execution defaults for environments such as `local` and `colab`.
 - The orchestrator checkpoints each completed cell to `results/runs/<ts>/checkpoint.json` for resume.
 - In mixed-model dual-GPU mode, Thinking is pinned to GPU 0 / port 8080 and Instruct to GPU 1 / port 8081 by default; the orchestrator routes each model to its configured lane.
 - `prod` (`tqp-*`) runtimes are expected to fail generation; the runner records this as a FAIL cell rather than raising.

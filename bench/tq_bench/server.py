@@ -25,6 +25,13 @@ class ServerLaunchConfig:
     host: str = "127.0.0.1"
     port: int = 8080
     n_parallel: int = 4
+    batch_size: int = 512
+    ubatch_size: int = 512
+    n_gpu_layers: int = 99
+    cache_ram: int = 16384
+    slot_save_path: Path | None = Path("./kvcache")
+    no_warmup: bool = True
+    no_mmap: bool = True
 
 
 class LlamaServer:
@@ -52,14 +59,14 @@ class LlamaServer:
             "--ctx-size",
             str(runtime_config.ctx_size * n_parallel),
             "-b",
-            "512",
+            str(self.launch_config.batch_size),
             "-ub",
-            "512",
+            str(self.launch_config.ubatch_size),
             "--jinja",
             "--temp",
             "0.0",
             "-ngl",
-            "99",
+            str(self.launch_config.n_gpu_layers),
             "-fa",
             "on",
             "--parallel",
@@ -67,9 +74,15 @@ class LlamaServer:
         ]
         if self.launch_config.mmproj_path is not None:
             cmd.extend(["--mmproj", str(self.launch_config.mmproj_path)])
-        # Disable prompt cache to save VRAM.
-        cmd.extend(["--cache-ram", "0"])
-        cmd.append("--no-mmap")
+        cmd.extend(["--cache-ram", str(self.launch_config.cache_ram)])
+        if self.launch_config.slot_save_path is not None:
+            cmd.extend(["--slot-save-path", str(self.launch_config.slot_save_path)])
+        # Benchmark scores should not depend on a synthetic empty warmup pass.
+        # Disabling warmup also avoids transient VRAM spikes on smaller GPUs.
+        if self.launch_config.no_warmup:
+            cmd.append("--no-warmup")
+        if self.launch_config.no_mmap:
+            cmd.append("--no-mmap")
         return cmd
 
     # ------------------------------------------------------------------
@@ -116,6 +129,8 @@ class LlamaServer:
             raise FileNotFoundError(
                 f"mmproj file not found: {self.launch_config.mmproj_path}"
             )
+        if self.launch_config.slot_save_path is not None:
+            self.launch_config.slot_save_path.mkdir(parents=True, exist_ok=True)
 
         # Make sure no stale server is occupying our port ------------------
         self._kill_existing_on_port()
@@ -239,6 +254,12 @@ class LlamaServer:
             return resp.status_code == 200
         except (httpx.ConnectError, httpx.TimeoutException, httpx.ReadError, OSError):
             return False
+
+    def poll(self) -> int | None:
+        """Return the child process exit code if it has exited, else None."""
+        if self.proc is None:
+            return None
+        return self.proc.poll()
 
     # ------------------------------------------------------------------
     # Helpers

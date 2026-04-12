@@ -19,6 +19,18 @@ class RuntimeConfig:
 
 
 @dataclass(frozen=True)
+class DownloadFileSpec:
+    filename: str | None = None
+    suffix: str | None = None
+
+
+@dataclass(frozen=True)
+class ModelDownloadConfig:
+    repo_id: str
+    files: dict[str, DownloadFileSpec] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class BenchmarkConfig:
     id: str
     task_type: str
@@ -58,6 +70,24 @@ class ModelConfig:
     frequency_penalty: float | None = None
     quantized_model_paths: dict[str, Path] = field(default_factory=dict)
     model_quantization: str = "bf16"
+    download: ModelDownloadConfig | None = None
+
+
+@dataclass(frozen=True)
+class ExecutionProfile:
+    id: str
+    description: str = ""
+    gpu_id: int | None = None
+    port: int | None = None
+    parallel_requests: int | None = None
+    cache_ram: int | None = None
+    slot_save_path: Path | None = None
+    batch_size: int | None = None
+    ubatch_size: int | None = None
+    n_gpu_layers: int | None = None
+    no_warmup: bool | None = None
+    no_mmap: bool | None = None
+    results_dir: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -147,6 +177,39 @@ def load_models(path: str | Path) -> dict[str, ModelConfig]:
             str(quant_name).lower(): (resolved.parent / rel_path).resolve()
             for quant_name, rel_path in quantized_model_paths_raw.items()
         }
+        download_raw = item.get("download")
+        download_config: ModelDownloadConfig | None = None
+        if download_raw is not None:
+            if not isinstance(download_raw, dict):
+                raise TypeError(f"Model config for {model_id}.download must be a mapping")
+            repo_id = str(download_raw.get("repo_id", "")).strip()
+            if not repo_id:
+                raise TypeError(f"Model config for {model_id}.download.repo_id is required")
+            files_raw = download_raw.get("files", {})
+            if not isinstance(files_raw, dict):
+                raise TypeError(f"Model config for {model_id}.download.files must be a mapping")
+            files: dict[str, DownloadFileSpec] = {}
+            for artifact_id, spec_raw in files_raw.items():
+                if isinstance(spec_raw, str):
+                    files[str(artifact_id).lower()] = DownloadFileSpec(suffix=spec_raw)
+                    continue
+                if not isinstance(spec_raw, dict):
+                    raise TypeError(
+                        f"Model config for {model_id}.download.files.{artifact_id} "
+                        "must be a mapping or string"
+                    )
+                filename = spec_raw.get("filename")
+                suffix = spec_raw.get("suffix")
+                if filename is None and suffix is None:
+                    raise TypeError(
+                        f"Model config for {model_id}.download.files.{artifact_id} "
+                        "must define filename or suffix"
+                    )
+                files[str(artifact_id).lower()] = DownloadFileSpec(
+                    filename=str(filename) if filename is not None else None,
+                    suffix=str(suffix) if suffix is not None else None,
+                )
+            download_config = ModelDownloadConfig(repo_id=repo_id, files=files)
         loaded[model_id] = ModelConfig(
             id=model_id,
             family=item["family"],
@@ -191,8 +254,68 @@ def load_models(path: str | Path) -> dict[str, ModelConfig]:
                 else None
             ),
             quantized_model_paths=quantized_model_paths,
+            download=download_config,
         )
     return loaded
+
+
+def load_profiles(path: str | Path) -> dict[str, ExecutionProfile]:
+    resolved = Path(path)
+    data = _load_yaml(resolved)
+    profiles_raw = data.get("profiles", {})
+    if not isinstance(profiles_raw, dict):
+        raise TypeError("profiles must be a mapping")
+
+    profiles: dict[str, ExecutionProfile] = {}
+    for profile_id, item in profiles_raw.items():
+        if not isinstance(item, dict):
+            raise TypeError(f"Profile config for {profile_id} must be a mapping")
+        slot_save_value = item.get("slot_save_path")
+        results_dir_value = item.get("results_dir")
+        profiles[str(profile_id)] = ExecutionProfile(
+            id=str(profile_id),
+            description=str(item.get("description", "")),
+            gpu_id=int(item["gpu_id"]) if item.get("gpu_id") is not None else None,
+            port=int(item["port"]) if item.get("port") is not None else None,
+            parallel_requests=(
+                int(item["parallel_requests"])
+                if item.get("parallel_requests") is not None
+                else None
+            ),
+            cache_ram=int(item["cache_ram"]) if item.get("cache_ram") is not None else None,
+            slot_save_path=(
+                (resolved.parent / slot_save_value).resolve()
+                if slot_save_value and not Path(slot_save_value).is_absolute()
+                else Path(slot_save_value).resolve() if slot_save_value else None
+            ),
+            batch_size=int(item["batch_size"]) if item.get("batch_size") is not None else None,
+            ubatch_size=(
+                int(item["ubatch_size"])
+                if item.get("ubatch_size") is not None
+                else None
+            ),
+            n_gpu_layers=(
+                int(item["n_gpu_layers"])
+                if item.get("n_gpu_layers") is not None
+                else None
+            ),
+            no_warmup=(
+                bool(item["no_warmup"])
+                if item.get("no_warmup") is not None
+                else None
+            ),
+            no_mmap=(
+                bool(item["no_mmap"])
+                if item.get("no_mmap") is not None
+                else None
+            ),
+            results_dir=(
+                (resolved.parent / results_dir_value).resolve()
+                if results_dir_value and not Path(results_dir_value).is_absolute()
+                else Path(results_dir_value).resolve() if results_dir_value else None
+            ),
+        )
+    return profiles
 
 
 def build_matrix(

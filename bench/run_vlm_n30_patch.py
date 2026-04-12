@@ -17,8 +17,11 @@ from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 
-_BUILD_BIN = "/home/kch3dri4n/lab/TQ_LLAMACPP_VSION_BENCH/llama.cpp/build/bin"
-os.environ.setdefault("LD_LIBRARY_PATH", _BUILD_BIN)
+from tq_bench.env import default_server_binary, prepend_ld_library_path, project_root_from
+
+_PROJECT = project_root_from(__file__)
+_BUILD_BIN = _PROJECT / "llama.cpp" / "build" / "bin"
+prepend_ld_library_path(_BUILD_BIN)
 
 from tq_bench.config import (
     BenchmarkConfig,
@@ -29,10 +32,10 @@ from tq_bench.config import (
 )
 from tq_bench.runner import BenchmarkRunner, RunRecord
 
-BENCH_DIR = Path("/home/kch3dri4n/lab/TQ_LLAMACPP_VSION_BENCH/bench")
-SERVER_BINARY = Path("/home/kch3dri4n/lab/TQ_LLAMACPP_VSION_BENCH/llama.cpp/build/bin/llama-server")
-EXISTING_PATH = Path("/home/kch3dri4n/lab/TQ_LLAMACPP_VSION_BENCH/results/runs/vlm_final_n30.json")
-OUTPUT_PATH = Path("/home/kch3dri4n/lab/TQ_LLAMACPP_VSION_BENCH/results/runs/vlm_final_n30.json")
+BENCH_DIR = Path(__file__).resolve().parent
+SERVER_BINARY = default_server_binary(_PROJECT)
+EXISTING_PATH = _PROJECT / "results" / "runs" / "vlm_final_n30.json"
+OUTPUT_PATH = _PROJECT / "results" / "runs" / "vlm_final_n30.json"
 
 RUNTIME_IDS = ["baseline", "lcpp-kv-4", "tq-4", "tq-K4V3", "tq-3"]
 BENCHMARK_IDS = ["ai2d", "mmmu", "mathvista"]
@@ -61,7 +64,7 @@ def get_git_commit() -> str:
         result = subprocess.run(
             ["git", "rev-parse", "HEAD"],
             capture_output=True, text=True, timeout=5,
-            cwd="/home/kch3dri4n/lab/TQ_LLAMACPP_VSION_BENCH",
+            cwd=str(_PROJECT),
         )
         return result.stdout.strip()
     except Exception:

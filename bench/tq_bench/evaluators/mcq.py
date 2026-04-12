@@ -51,21 +51,24 @@ def _normalize_for_match(text: str) -> str:
 
 
 # Regexes compiled once at import time.
-# These are intentionally case-sensitive: Qwen-VL outputs answer letters as
-# uppercase, and lowercase "a"/"i" are pronouns/articles in English text.
-_RE_BOXED = re.compile(r"\\boxed\{\s*([A-Z])\s*[^}]*\}")
-# Match "answer is X" only when X is followed by a sentence terminator
-# (period, comma, semi-colon, end-of-string, or newline) — so "answer is a
-# person who ..." does NOT match.
+# Lower-case final answers do appear in practice, but we still keep the
+# generic fallback case-sensitive so that normal English text does not create
+# spurious "a"/"i" matches.
+_RE_BOXED = re.compile(r"\\boxed\{\s*([A-Za-z])\s*[^}]*\}")
+# Match explicit answer phrases only when the answer token is clearly
+# delimited at end-of-line / end-of-string so "answer is a person" does not
+# get parsed as option A.
 _RE_ANSWER_IS = re.compile(
-    r"(?:[Tt]he\s+)?(?:[Cc]orrect\s+)?[Aa]nswer(?:\s+choice)?(?:\s+is|:)\s*"
-    r"(?:[Oo]ption\s+)?\*{0,2}\(?\s*([A-Z])\s*[\)\.\,\;\:]?(?:\s*$|\s|\n|$)",
+    r"(?:[Tt]he\s+)?(?:(?:[Cc]orrect|[Ff]inal)\s+)?[Aa]nswer(?:\s+choice)?(?:\s+is|:)\s*\n?"
+    r"(?:[Oo]ption\s+)?\*{0,2}\(?\s*([A-Za-z])\s*\)?[\.\,\;\:]?\s*$",
+    re.MULTILINE,
 )
 _RE_OPTION_IS = re.compile(
-    r"[Oo]ption\s*\(?\s*([A-Z])\s*\)?(?:\s*[\.\,\:]|\s*$)",
+    r"[Oo]ption\b\s*\(?\s*([A-Za-z])\s*\)?(?:\s*[\.\,\:]?\s*$)",
+    re.MULTILINE,
 )
 _RE_LEADING_LETTER = re.compile(
-    r"^\s*\*{0,2}\(?\s*([A-Z])\s*[\)\.\,\:]",
+    r"^\s*\*{0,2}\(?\s*([A-Za-z])\s*[\)\.\,\:]",
 )
 # Match isolated UPPER-CASE letters only. We deliberately do NOT use
 # re.IGNORECASE here because lowercase "a" / "i" appear constantly inside
@@ -140,20 +143,46 @@ def extract_option_letter(prediction: str) -> str | None:
     if m:
         return m.group(1).upper()
 
-    # 6. Single letter at start-of-line / end-of-line, ignoring stray
-    #    surrounding whitespace or a trailing period (e.g. "B").
-    head = _strip_markdown(text.splitlines()[0])
-    if len(head) <= 3 and head:
-        for ch in head:
-            if ch.upper() in _OPTION_LETTERS:
-                return ch.upper()
+    lines = [line for line in text.splitlines() if line.strip()]
 
-    # 7. Final fallback: first isolated A-Z token in the first ~80 chars.
-    for m in _RE_ANY_LETTER_TOKEN.finditer(text[:80]):
-        letter = m.group(1).upper()
-        if letter in _OPTION_LETTERS:
-            return letter
+    # 6. Last non-empty line is often the actual final answer.
+    if lines:
+        tail = _strip_markdown(lines[-1])
+        if len(tail) <= 3 and tail:
+            for ch in tail:
+                if ch.upper() in _OPTION_LETTERS:
+                    return ch.upper()
+        # 6b. Last line starts with "X. text" (e.g. "C. CO2", "A. Jupiter").
+        if tail:
+            m = _RE_LEADING_LETTER.match(tail)
+            if m:
+                return m.group(1).upper()
 
+    # 6c. Bold letter in last ~300 chars: "**B**", "*C*".
+    tail_region = text[-300:] if len(text) > 300 else text
+    m_bold = re.search(r"\*{1,2}([A-Za-z])\*{1,2}", tail_region)
+    if m_bold and m_bold.group(1).upper() in _OPTION_LETTERS:
+        return m_bold.group(1).upper()
+
+    # 7. Final fallback: last isolated UPPER-CASE token in the tail of the
+    #    response.  We scan the last 200 chars first (where the final answer
+    #    usually lives), then fall back to the first 80 chars.
+    for region in (text[-200:], text[:80]):
+        matches = list(_RE_ANY_LETTER_TOKEN.finditer(region))
+        for m in reversed(matches):
+            letter = m.group(1).upper()
+            if letter in _OPTION_LETTERS:
+                return letter
+
+    # 8. First-line shortcut for answers like "A\\nbecause ...".
+    if lines:
+        head = _strip_markdown(lines[0])
+        if len(head) <= 3 and head:
+            for ch in head:
+                if ch.upper() in _OPTION_LETTERS:
+                    return ch.upper()
+
+    # 9. No parse.
     return None
 
 

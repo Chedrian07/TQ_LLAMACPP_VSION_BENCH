@@ -59,21 +59,25 @@ import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import asdict, replace
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
+
+from tq_bench.config import ExecutionProfile
+from tq_bench.env import default_server_binary, prepend_ld_library_path, project_root_from
 
 # ---------------------------------------------------------------------------
 # Environment
 # ---------------------------------------------------------------------------
 
-_PROJECT = Path("/home/kch3dri4n/lab/TQ_LLAMACPP_VSION_BENCH")
-_BUILD_BIN = str(_PROJECT / "llama.cpp/build/bin")
-os.environ.setdefault("LD_LIBRARY_PATH", _BUILD_BIN)
+_PROJECT = project_root_from(__file__)
+_BUILD_BIN = _PROJECT / "llama.cpp" / "build" / "bin"
+prepend_ld_library_path(_BUILD_BIN)
 
-BENCH_DIR = _PROJECT / "bench"
-SERVER_BINARY = _PROJECT / "llama.cpp/build/bin/llama-server"
+BENCH_DIR = Path(__file__).resolve().parent
+SERVER_BINARY = default_server_binary(_PROJECT)
 RESULTS_DIR = _PROJECT / "results/runs"
+PROFILES_YAML = BENCH_DIR / "configs/profiles.yaml"
 
 # ---------------------------------------------------------------------------
 # Runtime / benchmark groups
@@ -198,6 +202,25 @@ def make_cell_key(model_id: str, runtime_id: str, benchmark_id: str) -> str:
     return f"{runtime_id}:{benchmark_id}"
 
 
+def _apply_profile(model, profile: ExecutionProfile) -> object:
+    updates = {}
+    if profile.gpu_id is not None:
+        updates["gpu_id"] = profile.gpu_id
+    if profile.port is not None:
+        updates["port"] = profile.port
+    if profile.parallel_requests is not None:
+        updates["parallel_requests"] = profile.parallel_requests
+    if not updates:
+        return model
+    return replace(model, **updates)
+
+
+def _resolve_path_override(value: str | None) -> Path | None:
+    if value is None:
+        return None
+    return Path(value).expanduser().resolve()
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -216,6 +239,8 @@ def main():
                         help="Benchmark IDs or group names (p0/vlm/text/all)")
     parser.add_argument("--model", action="append", dest="models", default=None,
                         help="Model ID from models.yaml (repeatable). Default: all configured models.")
+    parser.add_argument("--profile", default="local",
+                        help="Execution profile ID from configs/profiles.yaml (default: local).")
     parser.add_argument("--gpu", type=int, default=None,
                         help="Override GPU device id for a single selected model.")
     parser.add_argument("--parallel", type=int, default=None,
@@ -224,6 +249,18 @@ def main():
                         help="Select which model weight quantization variant to use.")
     parser.add_argument("--port", type=int, default=None,
                         help="Override server port (default: from models.yaml)")
+    parser.add_argument("--results-dir", type=str, default=None,
+                        help="Directory for auto-generated output JSONs.")
+    parser.add_argument("--slot-save-path", type=str, default=None,
+                        help="Override llama-server --slot-save-path.")
+    parser.add_argument("--cache-ram", type=int, default=None,
+                        help="Override llama-server --cache-ram.")
+    parser.add_argument("--batch-size", type=int, default=None,
+                        help="Override llama-server -b.")
+    parser.add_argument("--ubatch-size", type=int, default=None,
+                        help="Override llama-server -ub.")
+    parser.add_argument("--n-gpu-layers", type=int, default=None,
+                        help="Override llama-server -ngl.")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--output", type=str, default=None,
                         help="Output JSON path (auto-generated if omitted)")
@@ -233,7 +270,7 @@ def main():
 
     from tq_bench.config import (
         BenchmarkConfig, ExperimentCell,
-        load_benchmarks, load_models, load_runtimes,
+        load_benchmarks, load_models, load_profiles, load_runtimes,
     )
     from tq_bench.runner import BenchmarkRunner, RunRecord
 
@@ -241,6 +278,11 @@ def main():
     runtimes_all = load_runtimes(BENCH_DIR / "configs/runtimes.yaml")
     benchmarks_all = load_benchmarks(BENCH_DIR / "configs/benchmarks.yaml")
     models = load_models(BENCH_DIR / "configs/models.yaml")
+    profiles = load_profiles(PROFILES_YAML)
+    if args.profile not in profiles:
+        logger.error("Unknown profile '%s'. Available: %s", args.profile, sorted(profiles.keys()))
+        sys.exit(1)
+    profile = profiles[args.profile]
 
     runtimes_map = {rt.id: rt for rt in runtimes_all}
     benchmarks_map = {bm.id: bm for bm in benchmarks_all}
@@ -254,7 +296,7 @@ def main():
         if model_id not in models:
             logger.error("Unknown model '%s'. Available: %s", model_id, list(models.keys()))
             sys.exit(1)
-        selected_models.append(models[model_id])
+        selected_models.append(_apply_profile(models[model_id], profile))
         seen_models.add(model_id)
 
     if args.model_quant != "bf16":
@@ -296,13 +338,72 @@ def main():
     if len(selected_models) > 1 and args.parallel is not None:
         logger.error("--parallel override is only valid for a single selected model. Use --model MODEL --parallel N.")
         sys.exit(1)
+    if (
+        len(selected_models) > 1
+        and args.profile != "local"
+        and any(
+            value is not None
+            for value in (profile.gpu_id, profile.port, profile.parallel_requests)
+        )
+    ):
+        logger.error(
+            "--profile %s applies single-model execution overrides. Select one --model for this profile.",
+            args.profile,
+        )
+        sys.exit(1)
     if len(selected_models) == 1 and args.gpu is not None:
         selected_models[0] = replace(selected_models[0], gpu_id=args.gpu)
+    if len(selected_models) == 1 and args.port is not None:
+        selected_models[0] = replace(selected_models[0], port=args.port)
     if args.parallel is not None:
         if args.parallel < 1:
             logger.error("--parallel must be >= 1.")
             sys.exit(1)
         selected_models[0] = replace(selected_models[0], parallel_requests=args.parallel)
+
+    results_dir = _resolve_path_override(args.results_dir) or profile.results_dir or RESULTS_DIR
+    slot_save_path = _resolve_path_override(args.slot_save_path) or profile.slot_save_path or Path("./kvcache")
+    cache_ram = (
+        args.cache_ram
+        if args.cache_ram is not None
+        else profile.cache_ram if profile.cache_ram is not None else 16384
+    )
+    batch_size = (
+        args.batch_size
+        if args.batch_size is not None
+        else profile.batch_size if profile.batch_size is not None else 512
+    )
+    ubatch_size = (
+        args.ubatch_size
+        if args.ubatch_size is not None
+        else profile.ubatch_size if profile.ubatch_size is not None else 512
+    )
+    n_gpu_layers = (
+        args.n_gpu_layers
+        if args.n_gpu_layers is not None
+        else profile.n_gpu_layers if profile.n_gpu_layers is not None else 99
+    )
+    no_warmup = profile.no_warmup if profile.no_warmup is not None else True
+    no_mmap = profile.no_mmap if profile.no_mmap is not None else True
+
+    if cache_ram < 0:
+        logger.error("--cache-ram must be >= 0.")
+        sys.exit(1)
+    if batch_size < 1:
+        logger.error("--batch-size must be >= 1.")
+        sys.exit(1)
+    if ubatch_size < 1:
+        logger.error("--ubatch-size must be >= 1.")
+        sys.exit(1)
+    server_meta = {
+        "batch_size": batch_size,
+        "ubatch_size": ubatch_size,
+        "n_gpu_layers": n_gpu_layers,
+        "cache_ram": cache_ram,
+        "slot_save_path": str(slot_save_path),
+        "no_warmup": no_warmup,
+        "no_mmap": no_mmap,
+    }
 
     # Resolve runtime and benchmark lists
     runtime_ids = resolve_ids(args.runtimes, RUNTIME_GROUPS)
@@ -350,7 +451,7 @@ def main():
                 model_tag += f"_{selected_models[0].model_quantization}"
         else:
             model_tag = f"{len(selected_models)}models"
-        output_path = RESULTS_DIR / f"bench_{model_tag}_{rt_tag}_{bm_tag}_n{args.num}_{ts}.json"
+        output_path = results_dir / f"bench_{model_tag}_{rt_tag}_{bm_tag}_n{args.num}_{ts}.json"
 
     # Resume: load existing records to skip
     completed_keys: set[str] = set()
@@ -391,12 +492,13 @@ def main():
 
     logger.info("=" * 70)
     logger.info("TQ-VLM-Bench")
+    logger.info("  Profile:    %s", args.profile)
     logger.info(
         "  Models:     %s",
         [
             (
                 f"{m.id}(quant={m.model_quantization}, mode={m.reasoning_mode}, gpu={m.gpu_id}, "
-                f"port={args.port or m.port or 8080}, parallel={m.parallel_requests or 4}, "
+                f"port={m.port or 8080}, parallel={m.parallel_requests or 4}, "
                 f"temp={m.temperature if m.temperature is not None else 0.0}, "
                 f"top_p={m.top_p}, top_k={m.top_k}, min_p={m.min_p}, "
                 f"repeat_penalty={m.repeat_penalty}, presence_penalty={m.presence_penalty}, "
@@ -404,6 +506,17 @@ def main():
             )
             for m in selected_models
         ],
+    )
+    logger.info(
+        "  Server:     batch=%d ubatch=%d ngl=%d cache_ram=%d slot_save_path=%s "
+        "no_warmup=%s no_mmap=%s",
+        batch_size,
+        ubatch_size,
+        n_gpu_layers,
+        cache_ram,
+        slot_save_path,
+        no_warmup,
+        no_mmap,
     )
     logger.info("  Runtimes:   %s", [rt.id for rt in runtimes])
     logger.info("  Benchmarks: %s", [bm.id for bm in benchmarks])
@@ -439,7 +552,7 @@ def main():
     def run_model_queue(lane_idx, model_config):
         threading.current_thread().name = f"lane-{model_config.id}"
 
-        model_port = args.port or model_config.port or 8080
+        model_port = model_config.port or 8080
         model_gpu_id = model_config.gpu_id
         base_parallel = model_config.parallel_requests or 4
         runner = BenchmarkRunner(
@@ -448,6 +561,13 @@ def main():
             request_timeout=180.0,
             max_retries=2,
             parallel_requests=base_parallel,
+            batch_size=batch_size,
+            ubatch_size=ubatch_size,
+            n_gpu_layers=n_gpu_layers,
+            cache_ram=cache_ram,
+            slot_save_path=slot_save_path,
+            no_warmup=no_warmup,
+            no_mmap=no_mmap,
         )
 
         for rt in runtimes:
@@ -551,12 +671,14 @@ def main():
                     _save_output(
                         output_path,
                         args,
+                        profile,
                         selected_models,
                         runtimes,
                         benchmarks,
                         scores,
                         statuses,
                         all_records,
+                        server_meta,
                         time.monotonic() - t_global,
                     )
 
@@ -572,8 +694,19 @@ def main():
     total_time = time.monotonic() - t_global
 
     # Final save
-    _save_output(output_path, args, selected_models, runtimes, benchmarks,
-                 scores, statuses, all_records, total_time)
+    _save_output(
+        output_path,
+        args,
+        profile,
+        selected_models,
+        runtimes,
+        benchmarks,
+        scores,
+        statuses,
+        all_records,
+        server_meta,
+        total_time,
+    )
 
     # Print summary
     _print_summary(selected_models, runtimes, benchmarks, scores, statuses, args.num, total_time)
@@ -583,8 +716,8 @@ def main():
 # Output
 # ---------------------------------------------------------------------------
 
-def _save_output(path, args, model_configs, runtimes, benchmarks,
-                 scores, statuses, records, wall_time):
+def _save_output(path, args, profile, model_configs, runtimes, benchmarks,
+                 scores, statuses, records, server_meta, wall_time):
     models_meta = [
         {
             "id": model.id,
@@ -609,6 +742,7 @@ def _save_output(path, args, model_configs, runtimes, benchmarks,
         "meta": {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "git_commit": get_git_commit(),
+            "profile": profile.id,
             "models": models_meta,
             "n_samples": args.num,
             "seed": args.seed,
@@ -616,6 +750,7 @@ def _save_output(path, args, model_configs, runtimes, benchmarks,
             "benchmarks": [bm.id for bm in benchmarks],
             "parity_metrics": {bm.id: bm.metric for bm in benchmarks if bm.id in PARITY_METRICS},
             "official_reference": OFFICIAL_SCORES,
+            "server_launch": server_meta,
             "total_wall_time": round(wall_time, 1),
         },
         "scores": scores,
