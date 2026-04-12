@@ -28,6 +28,33 @@ def _run_text(cmd: list[str], *, cwd: Path | None = None, env: dict[str, str] | 
     return result.stdout.strip()
 
 
+def _run_checked(
+    cmd: list[str],
+    *,
+    cwd: Path | None = None,
+    env: dict[str, str] | None = None,
+    step: str,
+) -> None:
+    result = subprocess.run(
+        cmd,
+        cwd=str(cwd) if cwd is not None else None,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode == 0:
+        return
+    stdout_tail = (result.stdout or "").strip()[-4000:]
+    stderr_tail = (result.stderr or "").strip()[-4000:]
+    raise RuntimeError(
+        f"{step} failed with exit code {result.returncode}\n"
+        f"Command: {' '.join(cmd)}\n"
+        f"--- stdout tail ---\n{stdout_tail}\n"
+        f"--- stderr tail ---\n{stderr_tail}"
+    )
+
+
 def _repo_name_from_url(repo_url: str) -> str:
     repo_name = Path(repo_url.rstrip("/")).name
     if repo_name.endswith(".git"):
@@ -183,6 +210,19 @@ def _nvcc_version() -> str:
     return _run_text(["nvcc", "--version"])
 
 
+def _parse_nvcc_release(version_text: str) -> tuple[int, int] | None:
+    match = re.search(r"release\s+(\d+)\.(\d+)", version_text)
+    if match is None:
+        return None
+    return int(match.group(1)), int(match.group(2))
+
+
+def _cmake_generator_args() -> list[str]:
+    if shutil.which("ninja") is not None:
+        return ["-G", "Ninja"]
+    return []
+
+
 def _llama_commit(llama_root: Path) -> str:
     return _run_text(["git", "rev-parse", "--short", "HEAD"], cwd=llama_root)
 
@@ -236,6 +276,13 @@ def ensure_llama_server(
     cuda_arch = detect_cuda_architecture()
     llama_commit = _llama_commit(llama_root)
     nvcc_version = _nvcc_version()
+    nvcc_release = _parse_nvcc_release(nvcc_version)
+    if int(cuda_arch) >= 120 and (nvcc_release is None or nvcc_release < (12, 8)):
+        raise RuntimeError(
+            "Detected a Blackwell GPU (sm_120), but the available CUDA toolkit "
+            f"does not appear to support it. nvcc reports: {nvcc_version!r}. "
+            "sm_120 compilation requires CUDA 12.8 or newer."
+        )
     cache_dir = drive / "cache" / "llama_server" / repo_slug / llama_commit / f"sm{cuda_arch}"
     cached_lib_dir = cache_dir / "bin"
     cached_binary = cached_lib_dir / "llama-server"
@@ -264,24 +311,32 @@ def ensure_llama_server(
             )
 
     build_dir = llama_root / build_dir_name
-    subprocess.run(
+    configure_cmd = [
+        "cmake",
+        "-B",
+        str(build_dir),
+        *_cmake_generator_args(),
+        "-DGGML_CUDA=ON",
+        f"-DCMAKE_CUDA_ARCHITECTURES={cuda_arch}",
+        "-DCMAKE_BUILD_TYPE=Release",
+    ]
+    _run_checked(
+        configure_cmd,
+        cwd=llama_root,
+        step="CMake configure for llama-server",
+    )
+    _run_checked(
         [
             "cmake",
-            "-B",
+            "--build",
             str(build_dir),
-            "-G",
-            "Ninja",
-            "-DGGML_CUDA=ON",
-            f"-DCMAKE_CUDA_ARCHITECTURES={cuda_arch}",
-            "-DCMAKE_BUILD_TYPE=Release",
+            "-j",
+            str(os.cpu_count() or 2),
+            "--target",
+            "llama-server",
         ],
         cwd=str(llama_root),
-        check=True,
-    )
-    subprocess.run(
-        ["cmake", "--build", str(build_dir), "-j", str(os.cpu_count() or 2), "--target", "llama-server"],
-        cwd=str(llama_root),
-        check=True,
+        step="CMake build for llama-server",
     )
 
     local_lib_dir = build_dir / "bin"
