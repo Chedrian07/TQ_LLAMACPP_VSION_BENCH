@@ -162,6 +162,16 @@ class LlamaServer:
             proc_env["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
             logger.info("Pinning to GPU %d via CUDA_VISIBLE_DEVICES=%d", gpu_id, gpu_id)
 
+        # Disable llama.cpp's built-in attn_rot_k Hadamard pre-rotation for
+        # TurboQuant runtimes.  TurboQuant already applies its own FWHT
+        # rotation during quantization; the extra attn_rot Hadamard nearly
+        # cancels the FWHT (both are Walsh-Hadamard), destroying the Beta
+        # distribution assumption that the Lloyd-Max codebook relies on.
+        is_turbo = runtime_config.cache_type_k.startswith("turbo")
+        if is_turbo:
+            proc_env["LLAMA_ATTN_ROT_DISABLE"] = "1"
+            logger.info("TurboQuant runtime detected: setting LLAMA_ATTN_ROT_DISABLE=1")
+
         self.proc = Popen(
             cmd,
             stdin=subprocess.DEVNULL,
