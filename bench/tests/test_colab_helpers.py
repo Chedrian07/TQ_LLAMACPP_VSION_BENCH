@@ -13,6 +13,7 @@ from tq_bench.colab import (
     detect_cuda_architecture,
     find_latest_run_file,
     install_bench_editable,
+    run_command_live,
 )
 
 
@@ -252,6 +253,25 @@ def test_install_bench_editable_always_adds_bench_to_sys_path(
 
     assert str(bench_dir.resolve()) in __import__("sys").path
     __import__("sys").path[:] = before
+
+
+def test_run_command_live_streams_output(capsys) -> None:
+    run_command_live(
+        ["python3", "-c", "print('hello from child')"],
+        step="demo",
+    )
+    out = capsys.readouterr().out
+    assert "hello from child" in out
+    assert "[tq-bench] demo:" in out
+
+
+def test_run_command_live_raises_on_failure() -> None:
+    try:
+        run_command_live(["python3", "-c", "import sys; sys.exit(3)"])
+    except RuntimeError as exc:
+        assert "exit code 3" in str(exc)
+    else:
+        raise AssertionError("run_command_live should have raised RuntimeError")
 
 
 def test_find_latest_run_file_prefers_latest_matching_model(tmp_path: Path) -> None:

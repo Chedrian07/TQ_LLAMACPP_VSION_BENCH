@@ -32,6 +32,37 @@ def _run_text(cmd: list[str], *, cwd: Path | None = None, env: dict[str, str] | 
     return result.stdout.strip()
 
 
+def run_command_live(
+    cmd: list[str],
+    *,
+    cwd: str | Path | None = None,
+    env: dict[str, str] | None = None,
+    step: str | None = None,
+) -> None:
+    if step:
+        _note(f"{step}: {' '.join(cmd)}")
+    proc = subprocess.Popen(
+        cmd,
+        cwd=str(cwd) if cwd is not None else None,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+    )
+    assert proc.stdout is not None
+    try:
+        for line in proc.stdout:
+            print(line, end="", flush=True)
+    finally:
+        proc.stdout.close()
+    returncode = proc.wait()
+    if returncode != 0:
+        raise RuntimeError(
+            f"Command failed with exit code {returncode}: {' '.join(cmd)}"
+        )
+
+
 def _run_checked(
     cmd: list[str],
     *,
