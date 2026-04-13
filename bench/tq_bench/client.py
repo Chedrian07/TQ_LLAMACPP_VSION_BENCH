@@ -19,6 +19,38 @@ class ChatMessage:
     content: str | list[dict[str, Any]]
 
 
+@dataclass
+class CompletionTimings:
+    """Timing and token-count data extracted from a llama-server response.
+
+    llama-server returns ``usage`` (OAI-compat) and ``timings``
+    (llama.cpp-specific) in every non-streaming chat completion response.
+    """
+
+    # Token counts (from usage + timings)
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+
+    # Timings in milliseconds (from timings object)
+    prompt_ms: float = 0.0          # total prefill time
+    predicted_ms: float = 0.0       # total decode time
+    predicted_per_token_ms: float = 0.0
+    predicted_per_second: float = 0.0  # decode tok/s
+
+    # Wall-clock measured by client
+    wall_ms: float = 0.0            # total round-trip latency
+
+    @property
+    def ttft_ms(self) -> float:
+        """Time to first token ≈ prefill time."""
+        return self.prompt_ms
+
+    @property
+    def decode_throughput_tps(self) -> float:
+        """Decode throughput in tokens/second."""
+        return self.predicted_per_second
+
+
 class LlamaApiClient:
     """OpenAI-compatible client for llama-server.
 
@@ -154,6 +186,10 @@ class LlamaApiClient:
         Thread-safety: uses the shared ``httpx.Client`` connection pool, so
         multiple threads may call this method concurrently.
 
+        The returned dict is augmented with a ``_timings`` key containing a
+        :class:`CompletionTimings` dataclass parsed from the server's
+        ``usage`` and ``timings`` fields, plus a client-measured wall-clock.
+
         Args:
             payload: The full JSON request body (as produced by
                 :meth:`build_chat_payload`).
@@ -170,7 +206,9 @@ class LlamaApiClient:
 
         for attempt in range(1, self.max_retries + 1):
             try:
+                t0 = time.monotonic()
                 resp = self._http.post(url, json=payload)
+                wall_ms = (time.monotonic() - t0) * 1000.0
 
                 if resp.status_code < 500:
                     if resp.status_code >= 400:
@@ -180,7 +218,9 @@ class LlamaApiClient:
                             "HTTP %d from server: %s", resp.status_code, body
                         )
                     resp.raise_for_status()
-                    return resp.json()
+                    data = resp.json()
+                    data["_timings"] = self._parse_timings(data, wall_ms)
+                    return data
 
                 # 5xx -- retryable
                 last_exc = httpx.HTTPStatusError(
@@ -210,6 +250,21 @@ class LlamaApiClient:
 
         # All retries exhausted.
         raise last_exc  # type: ignore[misc]
+
+    @staticmethod
+    def _parse_timings(data: dict[str, Any], wall_ms: float) -> CompletionTimings:
+        """Extract timing/usage info from a llama-server response."""
+        usage = data.get("usage") or {}
+        timings = data.get("timings") or {}
+        return CompletionTimings(
+            prompt_tokens=int(usage.get("prompt_tokens", 0)),
+            completion_tokens=int(usage.get("completion_tokens", 0)),
+            prompt_ms=float(timings.get("prompt_ms", 0.0)),
+            predicted_ms=float(timings.get("predicted_ms", 0.0)),
+            predicted_per_token_ms=float(timings.get("predicted_per_token_ms", 0.0)),
+            predicted_per_second=float(timings.get("predicted_per_second", 0.0)),
+            wall_ms=wall_ms,
+        )
 
     # ------------------------------------------------------------------
     # High-level helpers

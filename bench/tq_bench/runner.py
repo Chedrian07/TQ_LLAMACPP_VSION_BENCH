@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
+import statistics
 import threading
 import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
@@ -13,7 +14,7 @@ from tqdm import tqdm
 
 from .config import BenchmarkConfig, ExperimentCell, ModelConfig, RuntimeConfig
 from .server import LlamaServer, ServerLaunchConfig
-from .client import ChatMessage, LlamaApiClient
+from .client import ChatMessage, CompletionTimings, LlamaApiClient
 from PIL import Image
 
 from .datasets.base import BaseBenchmarkDataset
@@ -35,6 +36,77 @@ class SampleResult:
     score: float
     error: str | None = None
 
+    # Per-sample timing (ms)
+    ttft_ms: float = 0.0             # Time to first token (≈ prefill time)
+    total_latency_ms: float = 0.0    # Wall-clock round-trip latency
+    prefill_ms: float = 0.0          # Prefill/prompt processing time
+    decode_ms: float = 0.0           # Decode/generation time
+    decode_throughput_tps: float = 0.0  # Decode tokens/second
+
+    # Per-sample token counts
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+
+    # Per-sample metadata
+    n_images: int = 0
+
+
+@dataclass
+class LatencyStats:
+    """Percentile summary for a collection of latency values."""
+
+    mean: float = 0.0
+    std: float = 0.0
+    median: float = 0.0
+    p50: float = 0.0
+    p95: float = 0.0
+    p99: float = 0.0
+    min: float = 0.0
+    max: float = 0.0
+
+    @staticmethod
+    def from_values(values: list[float]) -> "LatencyStats":
+        if not values:
+            return LatencyStats()
+        n = len(values)
+        sorted_v = sorted(values)
+        mean = statistics.mean(sorted_v)
+        std = statistics.stdev(sorted_v) if n >= 2 else 0.0
+        return LatencyStats(
+            mean=mean,
+            std=std,
+            median=sorted_v[n // 2],
+            p50=sorted_v[int(n * 0.50)],
+            p95=sorted_v[min(int(n * 0.95), n - 1)],
+            p99=sorted_v[min(int(n * 0.99), n - 1)],
+            min=sorted_v[0],
+            max=sorted_v[-1],
+        )
+
+
+@dataclass
+class ThroughputStats:
+    """Summary for decode throughput (tok/s)."""
+
+    mean: float = 0.0
+    min: float = 0.0
+    max: float = 0.0
+
+    @staticmethod
+    def from_values(values: list[float]) -> "ThroughputStats":
+        if not values:
+            return ThroughputStats()
+        return ThroughputStats(
+            mean=statistics.mean(values),
+            min=builtins_min(values),
+            max=builtins_max(values),
+        )
+
+
+# Avoid shadowing by dataclass field names
+builtins_min = min
+builtins_max = max
+
 
 @dataclass
 class RunRecord:
@@ -51,6 +123,23 @@ class RunRecord:
     wall_time_seconds: float = 0.0
     sample_results: list[SampleResult] = field(default_factory=list)
     notes: str = ""
+
+    # Aggregate score stats
+    score_std: float = 0.0
+    score_median: float = 0.0
+
+    # Aggregate latency stats
+    ttft_stats: LatencyStats = field(default_factory=LatencyStats)
+    total_latency_stats: LatencyStats = field(default_factory=LatencyStats)
+    decode_throughput_stats: ThroughputStats = field(default_factory=ThroughputStats)
+
+    # Aggregate token stats
+    total_prompt_tokens: int = 0
+    total_completion_tokens: int = 0
+
+    # GPU memory (populated by server monitoring)
+    gpu_memory_bytes: int = 0
+    kv_cache_bytes: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
@@ -314,6 +403,8 @@ class BenchmarkRunner:
             model_config.max_tokens_override,
         )
 
+        _gpu_mem = 0
+        _kv_cache_mem = 0
         try:
             with ThreadPoolExecutor(
                 max_workers=n_parallel,
@@ -441,6 +532,10 @@ class BenchmarkRunner:
                             for pending_fut in pending:
                                 pending_fut.cancel()
                             break
+
+            # Snapshot GPU memory while server is still running
+            _gpu_mem = server.get_gpu_memory(gpu_id=gpu_id)
+            _kv_cache_mem = server.get_kv_cache_bytes()
         finally:
             client.close()
             try:
@@ -471,16 +566,33 @@ class BenchmarkRunner:
         ]
         sample_results = sample_results_final  # type: ignore[assignment]
 
-        # -- 4. Compute aggregate score ----------------------------------------
+        # -- 4. Compute aggregate score & stats ----------------------------------
         n_succeeded = sum(1 for sr in sample_results if sr.error is None)
         n_failed = len(sample_results) - n_succeeded
 
         if sample_results:
-            aggregate_score = sum(sr.score for sr in sample_results) / len(
-                sample_results
-            )
+            scores = [sr.score for sr in sample_results]
+            aggregate_score = statistics.mean(scores)
+            score_std = statistics.stdev(scores) if len(scores) >= 2 else 0.0
+            sorted_scores = sorted(scores)
+            score_median = sorted_scores[len(sorted_scores) // 2]
         else:
             aggregate_score = 0.0
+            score_std = 0.0
+            score_median = 0.0
+
+        # Latency / throughput stats from succeeded samples only
+        ok_samples = [sr for sr in sample_results if sr.error is None]
+        ttft_values = [sr.ttft_ms for sr in ok_samples if sr.ttft_ms > 0]
+        latency_values = [sr.total_latency_ms for sr in ok_samples if sr.total_latency_ms > 0]
+        throughput_values = [sr.decode_throughput_tps for sr in ok_samples if sr.decode_throughput_tps > 0]
+
+        ttft_stats = LatencyStats.from_values(ttft_values)
+        total_latency_stats = LatencyStats.from_values(latency_values)
+        decode_throughput_stats = ThroughputStats.from_values(throughput_values)
+
+        total_prompt_tokens = sum(sr.prompt_tokens for sr in sample_results)
+        total_completion_tokens = sum(sr.completion_tokens for sr in sample_results)
 
         wall_time = time.monotonic() - t_start
 
@@ -513,6 +625,15 @@ class BenchmarkRunner:
             wall_time_seconds=wall_time,
             sample_results=sample_results,
             notes=notes,
+            score_std=score_std,
+            score_median=score_median,
+            ttft_stats=ttft_stats,
+            total_latency_stats=total_latency_stats,
+            decode_throughput_stats=decode_throughput_stats,
+            total_prompt_tokens=total_prompt_tokens,
+            total_completion_tokens=total_completion_tokens,
+            gpu_memory_bytes=_gpu_mem,
+            kv_cache_bytes=_kv_cache_mem,
         )
 
         logger.info(
@@ -562,6 +683,7 @@ class BenchmarkRunner:
         question = sample.get("question", "")
         reference = sample.get("answer", "")
         image_pil: Image.Image | None = sample.get("image")
+        images_pil: list[Image.Image] = list(sample.get("images") or [])
 
         # Short-circuit if a crash has already been detected.
         if crash_flag.is_set():
@@ -573,12 +695,18 @@ class BenchmarkRunner:
                 error="Server crashed before this sample was reached",
             )
 
-        # Encode image to base64 if present (CPU-bound, held by GIL but
+        # Encode images to base64 if present (CPU-bound, held by GIL but
         # cheap; done per-thread so threads aren't serialised on it).
-        image_b64: str | None = None
-        if is_vlm and image_pil is not None:
+        if not images_pil and image_pil is not None:
+            images_pil = [image_pil]
+
+        image_b64_list: list[str] = []
+        if is_vlm and images_pil:
             try:
-                image_b64 = self._encode_image_base64(image_pil)
+                image_b64_list = [
+                    self._encode_image_base64(image)
+                    for image in images_pil
+                ]
             except Exception as exc:  # noqa: BLE001
                 return idx, SampleResult(
                     sample_id=sample_id,
@@ -591,7 +719,7 @@ class BenchmarkRunner:
         messages = self._build_messages(
             system_prompt=system_prompt,
             question=question,
-            image_base64=image_b64,
+            image_base64_list=image_b64_list or None,
         )
 
         payload = client.build_chat_payload(
@@ -614,6 +742,8 @@ class BenchmarkRunner:
 
         prediction = ""
         error_msg: str | None = None
+        timings = CompletionTimings()
+        n_images = len(images_pil)
 
         for attempt in range(1, self.max_retries + 1):
             if crash_flag.is_set():
@@ -623,6 +753,7 @@ class BenchmarkRunner:
             try:
                 response = client.chat_completions(payload)
                 prediction = self._extract_content(response)
+                timings = response.get("_timings", CompletionTimings())
                 error_msg = None
                 break
             except Exception as exc:  # noqa: BLE001
@@ -651,6 +782,7 @@ class BenchmarkRunner:
                 reference=reference,
                 score=0.0,
                 error=error_msg,
+                n_images=n_images,
             )
 
         try:
@@ -665,6 +797,14 @@ class BenchmarkRunner:
                 reference=reference,
                 score=0.0,
                 error=f"Evaluation error: {eval_exc}",
+                ttft_ms=timings.ttft_ms,
+                total_latency_ms=timings.wall_ms,
+                prefill_ms=timings.prompt_ms,
+                decode_ms=timings.predicted_ms,
+                decode_throughput_tps=timings.decode_throughput_tps,
+                prompt_tokens=timings.prompt_tokens,
+                completion_tokens=timings.completion_tokens,
+                n_images=n_images,
             )
 
         return idx, SampleResult(
@@ -673,6 +813,14 @@ class BenchmarkRunner:
             reference=reference,
             score=sample_score,
             error=None,
+            ttft_ms=timings.ttft_ms,
+            total_latency_ms=timings.wall_ms,
+            prefill_ms=timings.prompt_ms,
+            decode_ms=timings.predicted_ms,
+            decode_throughput_tps=timings.decode_throughput_tps,
+            prompt_tokens=timings.prompt_tokens,
+            completion_tokens=timings.completion_tokens,
+            n_images=n_images,
         )
 
     # ------------------------------------------------------------------
@@ -725,7 +873,7 @@ class BenchmarkRunner:
     def _build_messages(
         system_prompt: str,
         question: str,
-        image_base64: str | None = None,
+        image_base64_list: list[str] | None = None,
     ) -> list[ChatMessage]:
         """Build the chat message list for a single sample.
 
@@ -737,20 +885,24 @@ class BenchmarkRunner:
             ChatMessage(role="system", content=system_prompt),
         ]
 
-        if image_base64 is not None:
-            # Multi-modal message: image + text
-            user_content: list[dict[str, Any]] = [
-                {
-                    "type": "image_url",
-                    "image_url": {
-                        "url": f"data:image/jpeg;base64,{image_base64}",
-                    },
-                },
+        if image_base64_list:
+            # Multi-modal message: one or more images + text.
+            user_content: list[dict[str, Any]] = []
+            for image_base64 in image_base64_list:
+                user_content.append(
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/jpeg;base64,{image_base64}",
+                        },
+                    }
+                )
+            user_content.append(
                 {
                     "type": "text",
                     "text": question,
-                },
-            ]
+                }
+            )
             messages.append(ChatMessage(role="user", content=user_content))
         else:
             # Text-only message

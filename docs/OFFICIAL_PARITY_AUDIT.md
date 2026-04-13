@@ -275,8 +275,8 @@ Risk level: high
 Local:
 
 - dataset: `MMMU/MMMU`, merged validation subjects
-- MCQ and open questions share local `option_match`
-- open questions use list/string heuristics via `OptionMatchEvaluator`
+- configured parity scorer is `mmmu_eval_only`
+- raw official parse-and-eval path is also available as `mmmu_official_raw`
 
 Official:
 
@@ -478,7 +478,7 @@ Therefore:
    - no debug subsampling
 3. benchmark-specific adapters
    - `mathvista_official.py`
-   - `mmmu_official.py`
+   - `mmmu_official.py` (`mmmu_eval_only` + `mmmu_official_raw`)
    - `textvqa_official.py`
    - `ocrbench_v2_official.py`
 

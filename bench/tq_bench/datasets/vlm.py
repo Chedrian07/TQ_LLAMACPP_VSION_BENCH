@@ -404,17 +404,16 @@ class MMMUDataset(BaseBenchmarkDataset):
         self._samples = []
         import ast
         for idx, row in enumerate(ds):
-            # MMMU stores images as image_1 .. image_7 columns
-            image: Image.Image | None = None
+            # MMMU stores images as image_1 .. image_7 columns.
+            images: list[Image.Image] = []
             for img_key in ("image_1", "image_2", "image_3", "image_4",
                             "image_5", "image_6", "image_7"):
                 candidate = row.get(img_key)
                 if candidate is not None:
-                    image = candidate
-                    break
-
-            if image is not None and image.mode != "RGB":
-                image = image.convert("RGB")
+                    if candidate.mode != "RGB":
+                        candidate = candidate.convert("RGB")
+                    images.append(candidate)
+            image: Image.Image | None = images[0] if images else None
 
             question_text: str = row["question"]
             raw_answer = row.get("answer", "")
@@ -433,10 +432,12 @@ class MMMUDataset(BaseBenchmarkDataset):
             elif isinstance(raw_options, list):
                 options = [str(o) for o in raw_options]
 
-            # Build prompt: include <image 1> placeholder replacement for clarity
-            # Remove <image N> placeholders from question text — the actual
-            # image is passed via the multimodal API.
-            clean_question = re.sub(r"<image\s*\d*>", "[image]", question_text)
+            # Keep explicit image numbering for multi-image MMMU questions.
+            clean_question = re.sub(
+                r"<image\s*(\d+)\s*>",
+                lambda m: f"[image {m.group(1)}]",
+                question_text,
+            )
 
             # Route by question type (MMMU has "multiple-choice" and "open")
             is_mcq = question_type == "multiple-choice" and bool(options)
@@ -444,10 +445,13 @@ class MMMUDataset(BaseBenchmarkDataset):
             if is_mcq:
                 options_block = self._format_mcq_options(options)
                 prompt = (
-                    f"Hint: Please answer the question and provide the correct "
-                    f"option letter, e.g., A, B, C, D, at the end.\n"
-                    f"Question: {clean_question}\n"
-                    f"Choices:\n{options_block}"
+                    f"{clean_question}\n"
+                    f"{options_block}\n"
+                    "Answer the preceding multiple choice question. "
+                    "The last line of your response should be of the following "
+                    "format: 'Answer: $LETTER' (without quotes) where LETTER "
+                    "is one of the options. Think step by step before "
+                    "answering."
                 )
                 # answer is a single letter like "C"; also provide text form
                 answer_str = str(raw_answer).strip()
@@ -464,9 +468,12 @@ class MMMUDataset(BaseBenchmarkDataset):
                 # Open-ended question: answer is either a plain string
                 # or a stringified list of acceptable answers like "['24/7', '3.429']"
                 prompt = (
-                    f"Hint: Please answer the question and provide the final "
-                    f"answer at the end.\n"
-                    f"Question: {clean_question}"
+                    f"{clean_question}\n"
+                    "Answer the preceding open-ended question. "
+                    "The last line of your response should be of the following "
+                    "format: 'Answer: $FINAL_ANSWER' (without quotes) where "
+                    "FINAL_ANSWER is a short answer. Think step by step "
+                    "before answering."
                 )
                 # Parse answer
                 answer_list: list[str] = []
@@ -485,6 +492,7 @@ class MMMUDataset(BaseBenchmarkDataset):
                 {
                     "id": f"mmmu_{idx}",
                     "image": image,
+                    "images": images if images else None,
                     "question": prompt,
                     "answer": resolved_answer,
                     "options": options if options else None,

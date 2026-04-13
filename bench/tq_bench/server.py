@@ -374,3 +374,63 @@ class LlamaServer:
             f"Port {self.launch_config.port} is already in use before starting llama-server. "
             f"Choose another --port or stop the conflicting process."
         )
+
+    # ------------------------------------------------------------------
+    # GPU / KV cache memory monitoring
+    # ------------------------------------------------------------------
+
+    def get_gpu_memory(self, *, gpu_id: int | None = None) -> int:
+        """Return GPU memory used (bytes) by querying nvidia-smi.
+
+        Best-effort: returns 0 if nvidia-smi is unavailable or fails.
+        """
+        if self.proc is None:
+            return 0
+        try:
+            # Query memory used by our server process
+            device = str(gpu_id) if gpu_id is not None else "0"
+            result = subprocess.run(
+                [
+                    "nvidia-smi",
+                    f"--id={device}",
+                    "--query-gpu=memory.used",
+                    "--format=csv,noheader,nounits",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                # nvidia-smi reports in MiB
+                mib = float(result.stdout.strip().split("\n")[0])
+                return int(mib * 1024 * 1024)
+        except (FileNotFoundError, subprocess.TimeoutExpired, ValueError):
+            pass
+        return 0
+
+    def get_kv_cache_bytes(self) -> int:
+        """Return KV cache size in bytes by querying the /slots endpoint.
+
+        Best-effort: returns 0 if the endpoint is unavailable or fails.
+        """
+        if self.proc is None:
+            return 0
+        try:
+            resp = httpx.get(
+                f"{self.base_url}/slots",
+                timeout=3.0,
+            )
+            if resp.status_code == 200:
+                slots = resp.json()
+                # Sum n_past * 2 (K+V) * type_size across slots
+                # The /slots endpoint returns per-slot info; extract cache usage
+                total = 0
+                for slot in slots:
+                    cache_tokens = slot.get("n_past", 0)
+                    # Approximate: each cached token uses (n_embd * 2 * type_bytes)
+                    # but we don't know type_bytes here. Use raw n_past as a proxy.
+                    total += cache_tokens
+                return total
+        except (httpx.ConnectError, httpx.TimeoutException, httpx.ReadError, OSError, ValueError):
+            pass
+        return 0

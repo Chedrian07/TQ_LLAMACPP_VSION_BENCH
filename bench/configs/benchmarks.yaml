@@ -15,7 +15,7 @@ benchmarks:
     sample_count: 500
     metric: option_match
     max_tokens: 1024  # MMMU STEM questions need long CoT
-    parity_metric: mmmu_official      # rfind, index2ans, random fallback, eval_open
+    parity_metric: mmmu_official      # raw official parse-and-eval flow
     parity_sample_count: -1           # full 900-sample validation
 
   - id: mathvista

@@ -102,7 +102,8 @@ class TestRegistry:
         for name in [
             "option_match", "anls", "relaxed_accuracy", "exact_match",
             "normalized_exact_match", "mathvista_match",
-            "mmmu_official", "mathvista_official", "textvqa_official",
+            "mmmu_official", "mmmu_eval_only", "mmmu_official_raw",
+            "mathvista_official", "textvqa_official",
             "chartqapro_official",
         ]:
             ev = get_evaluator(name)
