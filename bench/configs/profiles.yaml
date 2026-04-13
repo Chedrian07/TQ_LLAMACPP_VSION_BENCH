@@ -5,7 +5,7 @@ profiles:
   colab:
     description: Single-GPU Colab defaults for one-model benchmark runs.
     gpu_id: 0
-    port: 8080
+    port: 18080
     parallel_requests: 1
     cache_ram: 16384
     slot_save_path: /content/TQ_LLAMACPP_VSION_BENCH/kvcache

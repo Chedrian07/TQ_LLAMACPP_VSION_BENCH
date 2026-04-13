@@ -57,6 +57,7 @@ Generated artifacts under `results/` and `logs/` are not the source of truth for
 - `run_bench.py` binary overrides for non-default build trees (`--server-binary`, `--kv-dump-binary`).
 - Mixed-model / dual-GPU orchestration support.
 - KV-dump extraction plus Python-side KV analysis and reporting.
+- The `colab` execution profile avoids port `8080` because it can conflict with Colab's own runtime proxy.
 
 ## Quick Start
 
