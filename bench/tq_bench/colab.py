@@ -225,18 +225,17 @@ def ensure_llama_cpp_checkout(
 def install_bench_editable(repo_root: str | Path) -> None:
     root = Path(repo_root).resolve()
     bench_dir = root / "bench"
+    bench_dir_str = str(bench_dir.resolve())
+    resolved_sys_path = {str(Path(entry).resolve()) for entry in sys.path if entry}
+    if bench_dir_str not in resolved_sys_path:
+        sys.path.insert(0, bench_dir_str)
+        _note(f"Added {bench_dir} to sys.path.")
     base_cmd = [sys.executable, "-m", "pip", "install", "-e", str(bench_dir)]
     _note("Installing bench package in editable mode...")
     result = _run_pip_command(base_cmd)
     if result.returncode == 0:
         _note("Editable install succeeded.")
         return
-
-    bench_dir_str = str(bench_dir)
-    resolved_sys_path = {str(Path(entry).resolve()) for entry in sys.path if entry}
-    if bench_dir_str not in resolved_sys_path:
-        sys.path.insert(0, bench_dir_str)
-        _note(f"Added {bench_dir} to sys.path as a fallback.")
 
     deps = _load_runtime_dependencies(bench_dir / "pyproject.toml")
     dep_result = None

@@ -191,6 +191,28 @@ def test_install_bench_editable_falls_back_to_dependency_install(
     assert "pandas>=2.0.0" in calls[1]
 
 
+def test_install_bench_editable_always_adds_bench_to_sys_path(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    repo_root = tmp_path / "repo"
+    bench_dir = repo_root / "bench"
+    bench_dir.mkdir(parents=True)
+    _write_minimal_bench_pyproject(bench_dir)
+
+    def fake_run(cmd, check, capture_output, text):
+        del cmd, check, capture_output, text
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("tq_bench.colab.subprocess.run", fake_run)
+    before = list(__import__("sys").path)
+
+    install_bench_editable(repo_root)
+
+    assert str(bench_dir.resolve()) in __import__("sys").path
+    __import__("sys").path[:] = before
+
+
 def test_find_latest_run_file_prefers_latest_matching_model(tmp_path: Path) -> None:
     older = tmp_path / "bench_model_a_old.json"
     newer = tmp_path / "bench_model_a_new.json"
