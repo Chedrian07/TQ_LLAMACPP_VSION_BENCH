@@ -2,7 +2,7 @@
 name = "tq-vlm-bench"
 version = "0.1.0"
 description = "Benchmark framework for TurboQuant KV cache experiments on llama.cpp VLMs"
-readme = "README.md"
+readme = { text = "Benchmark framework for TurboQuant KV cache experiments on llama.cpp VLMs.", content-type = "text/markdown" }
 requires-python = ">=3.10"
 dependencies = [
     "datasets>=3.0.0",

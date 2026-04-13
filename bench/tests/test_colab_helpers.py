@@ -15,6 +15,20 @@ from tq_bench.colab import (
 )
 
 
+def _write_minimal_bench_pyproject(bench_dir: Path) -> None:
+    (bench_dir / "pyproject.toml").write_text(
+        """
+[project]
+name = "demo-bench"
+version = "0.1.0"
+dependencies = [
+    "pandas>=2.0.0",
+]
+""".strip(),
+        encoding="utf-8",
+    )
+
+
 def test_build_run_bench_command_includes_colab_overrides(tmp_path: Path) -> None:
     repo_root = tmp_path / "repo"
     (repo_root / "bench").mkdir(parents=True)
@@ -105,7 +119,9 @@ def test_install_bench_editable_retries_with_break_system_packages(
     monkeypatch,
 ) -> None:
     repo_root = tmp_path / "repo"
-    (repo_root / "bench").mkdir(parents=True)
+    bench_dir = repo_root / "bench"
+    bench_dir.mkdir(parents=True)
+    _write_minimal_bench_pyproject(bench_dir)
     calls: list[list[str]] = []
 
     def fake_run(cmd, check, capture_output, text):
@@ -129,7 +145,9 @@ def test_install_bench_editable_retries_with_break_system_packages(
 
 def test_install_bench_editable_raises_with_pip_output(tmp_path: Path, monkeypatch) -> None:
     repo_root = tmp_path / "repo"
-    (repo_root / "bench").mkdir(parents=True)
+    bench_dir = repo_root / "bench"
+    bench_dir.mkdir(parents=True)
+    _write_minimal_bench_pyproject(bench_dir)
 
     def fake_run(cmd, check, capture_output, text):
         del cmd, check, capture_output, text
@@ -145,6 +163,32 @@ def test_install_bench_editable_raises_with_pip_output(tmp_path: Path, monkeypat
         assert "pip stderr" in msg
     else:
         raise AssertionError("install_bench_editable should have raised RuntimeError")
+
+
+def test_install_bench_editable_falls_back_to_dependency_install(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    repo_root = tmp_path / "repo"
+    bench_dir = repo_root / "bench"
+    bench_dir.mkdir(parents=True)
+    _write_minimal_bench_pyproject(bench_dir)
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, check, capture_output, text):
+        del check, capture_output, text
+        calls.append(cmd)
+        if "-e" in cmd:
+            return SimpleNamespace(returncode=1, stdout="", stderr="metadata-generation-failed")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("tq_bench.colab.subprocess.run", fake_run)
+
+    install_bench_editable(repo_root)
+
+    assert len(calls) == 2
+    assert "-e" in calls[0]
+    assert "pandas>=2.0.0" in calls[1]
 
 
 def test_find_latest_run_file_prefers_latest_matching_model(tmp_path: Path) -> None:

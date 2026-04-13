@@ -55,6 +55,53 @@ def _run_checked(
     )
 
 
+def _run_pip_command(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+    result = subprocess.run(
+        cmd,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode == 0:
+        return result
+
+    combined = f"{result.stdout}\n{result.stderr}".lower()
+    if (
+        "--break-system-packages" not in cmd
+        and (
+            "externally-managed-environment" in combined
+            or "externally managed" in combined
+            or "break-system-packages" in combined
+        )
+    ):
+        retry_cmd = cmd[:4] + ["--break-system-packages"] + cmd[4:]
+        return subprocess.run(
+            retry_cmd,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+    return result
+
+
+def _load_runtime_dependencies(pyproject_path: Path) -> list[str]:
+    in_dependencies = False
+    deps: list[str] = []
+    for raw_line in pyproject_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not in_dependencies:
+            if line == "dependencies = [":
+                in_dependencies = True
+            continue
+        if line == "]":
+            break
+        match = re.match(r'^"([^"]+)"(?:,)?$', line)
+        if match:
+            deps.append(match.group(1))
+    return deps
+
+
 def _repo_name_from_url(repo_url: str) -> str:
     repo_name = Path(repo_url.rstrip("/")).name
     if repo_name.endswith(".git"):
@@ -148,51 +195,38 @@ def install_bench_editable(repo_root: str | Path) -> None:
     root = Path(repo_root).resolve()
     bench_dir = root / "bench"
     base_cmd = [sys.executable, "-m", "pip", "install", "-e", str(bench_dir)]
-    result = subprocess.run(
-        base_cmd,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
+    result = _run_pip_command(base_cmd)
     if result.returncode == 0:
         return
 
-    combined = f"{result.stdout}\n{result.stderr}".lower()
-    if (
-        "externally-managed-environment" in combined
-        or "externally managed" in combined
-        or "break-system-packages" in combined
-    ):
-        retry_cmd = [
-            sys.executable,
-            "-m",
-            "pip",
-            "install",
-            "--break-system-packages",
-            "-e",
-            str(bench_dir),
-        ]
-        retry = subprocess.run(
-            retry_cmd,
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-        if retry.returncode == 0:
+    bench_dir_str = str(bench_dir)
+    resolved_sys_path = {str(Path(entry).resolve()) for entry in sys.path if entry}
+    if bench_dir_str not in resolved_sys_path:
+        sys.path.insert(0, bench_dir_str)
+
+    deps = _load_runtime_dependencies(bench_dir / "pyproject.toml")
+    dep_result = None
+    if deps:
+        dep_cmd = [sys.executable, "-m", "pip", "install", *deps]
+        dep_result = _run_pip_command(dep_cmd)
+        if dep_result.returncode == 0:
             return
-        raise RuntimeError(
-            "Editable install of bench/ failed even after retrying with "
-            "--break-system-packages.\n"
-            f"Command: {' '.join(retry_cmd)}\n"
-            f"--- stdout tail ---\n{(retry.stdout or '').strip()[-4000:]}\n"
-            f"--- stderr tail ---\n{(retry.stderr or '').strip()[-4000:]}"
-        )
 
     raise RuntimeError(
         "Editable install of bench/ failed.\n"
         f"Command: {' '.join(base_cmd)}\n"
         f"--- stdout tail ---\n{(result.stdout or '').strip()[-4000:]}\n"
         f"--- stderr tail ---\n{(result.stderr or '').strip()[-4000:]}"
+        + (
+            ""
+            if dep_result is None
+            else (
+                "\nDependency-only fallback also failed.\n"
+                f"Command: {' '.join([sys.executable, '-m', 'pip', 'install', *deps])}\n"
+                f"--- stdout tail ---\n{(dep_result.stdout or '').strip()[-4000:]}\n"
+                f"--- stderr tail ---\n{(dep_result.stderr or '').strip()[-4000:]}"
+            )
+        )
     )
 
 
