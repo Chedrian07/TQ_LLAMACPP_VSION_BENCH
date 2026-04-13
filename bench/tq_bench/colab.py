@@ -16,6 +16,10 @@ from .config import DownloadFileSpec, ModelConfig, load_models
 from .env import prepend_ld_library_path
 
 
+def _note(message: str) -> None:
+    print(f"[tq-bench] {message}", flush=True)
+
+
 def _run_text(cmd: list[str], *, cwd: Path | None = None, env: dict[str, str] | None = None) -> str:
     result = subprocess.run(
         cmd,
@@ -34,7 +38,25 @@ def _run_checked(
     cwd: Path | None = None,
     env: dict[str, str] | None = None,
     step: str,
+    stream_output: bool = False,
 ) -> None:
+    if stream_output:
+        _note(f"{step}...")
+        result = subprocess.run(
+            cmd,
+            cwd=str(cwd) if cwd is not None else None,
+            env=env,
+            check=False,
+            text=True,
+        )
+        if result.returncode == 0:
+            _note(f"{step} done.")
+            return
+        raise RuntimeError(
+            f"{step} failed with exit code {result.returncode}\n"
+            f"Command: {' '.join(cmd)}"
+        )
+
     result = subprocess.run(
         cmd,
         cwd=str(cwd) if cwd is not None else None,
@@ -131,15 +153,19 @@ def ensure_repo_checkout(repo_url: str, branch: str, workspace_dir: str | Path) 
     repo_root = workspace / repo_name
 
     if not (repo_root / ".git").exists():
+        _note(f"Cloning repo {repo_url} into {repo_root}...")
         subprocess.run(
             ["git", "clone", "--branch", branch, "--depth", "1", repo_url, str(repo_root)],
             check=True,
         )
+        _note(f"Repo ready at {repo_root}.")
         return repo_root
 
+    _note(f"Refreshing repo checkout at {repo_root}...")
     subprocess.run(["git", "fetch", "--depth", "1", "origin", branch], cwd=str(repo_root), check=True)
     subprocess.run(["git", "checkout", "-B", branch, "FETCH_HEAD"], cwd=str(repo_root), check=True)
     subprocess.run(["git", "reset", "--hard", "FETCH_HEAD"], cwd=str(repo_root), check=True)
+    _note(f"Repo updated to branch {branch}.")
     return repo_root
 
 
@@ -163,6 +189,7 @@ def ensure_llama_cpp_checkout(
     llama_root = root / checkout_dir_name
 
     if not llama_root.exists():
+        _note(f"Cloning llama.cpp from {llama_repo_url} into {llama_root}...")
         subprocess.run(
             ["git", "clone", "--branch", branch, "--depth", "1", llama_repo_url, str(llama_root)],
             check=True,
@@ -172,17 +199,21 @@ def ensure_llama_cpp_checkout(
             f"{llama_root} exists but is not a git checkout; cannot stage custom llama.cpp"
         )
     else:
+        _note(f"Refreshing llama.cpp checkout at {llama_root}...")
         subprocess.run(["git", "fetch", "--tags", "origin"], cwd=str(llama_root), check=True)
         subprocess.run(["git", "fetch", "origin", branch], cwd=str(llama_root), check=True)
 
     if commit:
+        _note(f"Checking out llama.cpp commit {commit}...")
         subprocess.run(["git", "fetch", "origin", commit], cwd=str(llama_root), check=True)
         subprocess.run(["git", "checkout", "--detach", commit], cwd=str(llama_root), check=True)
     else:
+        _note(f"Checking out llama.cpp branch {branch}...")
         subprocess.run(["git", "checkout", branch], cwd=str(llama_root), check=True)
         subprocess.run(["git", "reset", "--hard", f"origin/{branch}"], cwd=str(llama_root), check=True)
 
     resolved_commit = _run_text(["git", "rev-parse", "HEAD"], cwd=llama_root)
+    _note(f"llama.cpp ready at {resolved_commit[:12]}.")
     return GitCheckout(
         repo_url=llama_repo_url,
         branch=branch,
@@ -195,21 +226,26 @@ def install_bench_editable(repo_root: str | Path) -> None:
     root = Path(repo_root).resolve()
     bench_dir = root / "bench"
     base_cmd = [sys.executable, "-m", "pip", "install", "-e", str(bench_dir)]
+    _note("Installing bench package in editable mode...")
     result = _run_pip_command(base_cmd)
     if result.returncode == 0:
+        _note("Editable install succeeded.")
         return
 
     bench_dir_str = str(bench_dir)
     resolved_sys_path = {str(Path(entry).resolve()) for entry in sys.path if entry}
     if bench_dir_str not in resolved_sys_path:
         sys.path.insert(0, bench_dir_str)
+        _note(f"Added {bench_dir} to sys.path as a fallback.")
 
     deps = _load_runtime_dependencies(bench_dir / "pyproject.toml")
     dep_result = None
     if deps:
+        _note("Editable install failed; retrying with runtime dependency install only...")
         dep_cmd = [sys.executable, "-m", "pip", "install", *deps]
         dep_result = _run_pip_command(dep_cmd)
         if dep_result.returncode == 0:
+            _note("Runtime dependencies installed; using source tree via sys.path.")
             return
 
     raise RuntimeError(
@@ -243,6 +279,7 @@ def configure_hf_cache(drive_root: str | Path) -> dict[str, Path]:
     os.environ["HF_HOME"] = str(paths["hf_home"])
     os.environ["HF_DATASETS_CACHE"] = str(paths["datasets"])
     os.environ["HF_HUB_CACHE"] = str(paths["hub"])
+    _note(f"Hugging Face cache configured under {hf_root}.")
     return paths
 
 
@@ -361,6 +398,10 @@ def ensure_llama_server(
     cuda_arch = detect_cuda_architecture()
     llama_commit = _llama_commit(llama_root)
     nvcc_version = _nvcc_version()
+    _note(
+        f"Preparing llama-server build for sm{cuda_arch} "
+        f"(llama.cpp {llama_commit}, nvcc={nvcc_version.splitlines()[-1].strip()})..."
+    )
     nvcc_release = _parse_nvcc_release(nvcc_version)
     if int(cuda_arch) >= 120 and (nvcc_release is None or nvcc_release < (12, 8)):
         raise RuntimeError(
@@ -389,6 +430,7 @@ def ensure_llama_server(
             and manifest.get("build_type") == "Release"
         ):
             prepend_ld_library_path(cached_lib_dir)
+            _note(f"Using cached llama-server artifacts from {cached_lib_dir}.")
             return LlamaServerArtifact(
                 repo_root=root,
                 llama_root=llama_root,
@@ -416,6 +458,7 @@ def ensure_llama_server(
         configure_cmd,
         cwd=llama_root,
         step="CMake configure for llama-server",
+        stream_output=True,
     )
     _run_checked(
         [
@@ -430,6 +473,7 @@ def ensure_llama_server(
         ],
         cwd=str(llama_root),
         step="CMake build for llama-server",
+        stream_output=True,
     )
 
     local_lib_dir = build_dir / "bin"
@@ -461,6 +505,7 @@ def ensure_llama_server(
         encoding="utf-8",
     )
     prepend_ld_library_path(local_lib_dir)
+    _note(f"llama-server artifacts built and cached at {cache_dir}.")
     return artifact
 
 
@@ -511,6 +556,7 @@ def ensure_model_artifacts(
     cache_dir.mkdir(parents=True, exist_ok=True)
 
     quant_key = quant.lower()
+    _note(f"Ensuring model artifacts for {model_id} ({quant_key})...")
     required_artifacts = {
         quant_key: _select_model_target(model, quant_key),
     }
@@ -528,7 +574,10 @@ def ensure_model_artifacts(
         cached_path = cache_dir / Path(remote_filename).name
         if force_redownload and cached_path.exists():
             cached_path.unlink()
+        if cached_path.exists():
+            _note(f"Using cached {artifact_id}: {cached_path.name}")
         if not cached_path.exists():
+            _note(f"Downloading {artifact_id}: {remote_filename}")
             downloaded = hf_hub_download(
                 repo_id=model.download.repo_id,
                 filename=remote_filename,
@@ -539,10 +588,12 @@ def ensure_model_artifacts(
             cached_path = Path(downloaded)
         target_path.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(cached_path, target_path)
+        _note(f"Copied {artifact_id} -> {target_path}")
         copied[artifact_id] = target_path
 
     copied["cache_dir"] = cache_dir
     copied["repo_root"] = repo_root
+    _note("Model artifacts ready.")
     return copied
 
 
