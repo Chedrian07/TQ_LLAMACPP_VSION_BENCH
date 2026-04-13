@@ -190,12 +190,17 @@ def detect_cuda_architecture() -> str:
 
     name = _run_text(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"]).splitlines()[0].strip()
     fallback_map = (
+        ("NVIDIA RTX PRO 6000 Blackwell", "120"),
         ("RTX PRO 6000 Blackwell", "120"),
+        ("RTX 6000 Blackwell", "120"),
         ("Blackwell", "120"),
         ("RTX 5070 Ti", "120"),
         ("RTX 5070", "120"),
+        ("L40S", "89"),
+        ("L40", "89"),
         ("RTX 4060 Ti", "89"),
         ("L4", "89"),
+        ("H100", "90"),
         ("A10G", "86"),
         ("A100", "80"),
         ("T4", "75"),
@@ -233,6 +238,7 @@ class LlamaServerArtifact:
     llama_root: Path
     llama_repo_url: str
     binary_path: Path
+    kv_dump_binary_path: Path
     lib_dir: Path
     cache_dir: Path
     cuda_arch: str
@@ -247,6 +253,7 @@ class LlamaServerArtifact:
             "llama_root": str(data["llama_root"]),
             "llama_repo_url": data["llama_repo_url"],
             "binary_path": str(data["binary_path"]),
+            "kv_dump_binary_path": str(data["kv_dump_binary_path"]),
             "lib_dir": str(data["lib_dir"]),
             "cache_dir": str(data["cache_dir"]),
             "cuda_arch": data["cuda_arch"],
@@ -286,9 +293,15 @@ def ensure_llama_server(
     cache_dir = drive / "cache" / "llama_server" / repo_slug / llama_commit / f"sm{cuda_arch}"
     cached_lib_dir = cache_dir / "bin"
     cached_binary = cached_lib_dir / "llama-server"
+    cached_kv_dump_binary = cached_lib_dir / "llama-kv-dump"
     manifest_path = cache_dir / "manifest.json"
 
-    if not force_rebuild and cached_binary.exists() and manifest_path.exists():
+    if (
+        not force_rebuild
+        and cached_binary.exists()
+        and cached_kv_dump_binary.exists()
+        and manifest_path.exists()
+    ):
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         if (
             manifest.get("llama_repo_url") == llama_repo_url
@@ -303,6 +316,7 @@ def ensure_llama_server(
                 llama_root=llama_root,
                 llama_repo_url=llama_repo_url,
                 binary_path=cached_binary,
+                kv_dump_binary_path=cached_kv_dump_binary,
                 lib_dir=cached_lib_dir,
                 cache_dir=cache_dir,
                 cuda_arch=cuda_arch,
@@ -334,6 +348,7 @@ def ensure_llama_server(
             str(os.cpu_count() or 2),
             "--target",
             "llama-server",
+            "llama-kv-dump",
         ],
         cwd=str(llama_root),
         step="CMake build for llama-server",
@@ -341,8 +356,11 @@ def ensure_llama_server(
 
     local_lib_dir = build_dir / "bin"
     local_binary = local_lib_dir / "llama-server"
+    local_kv_dump_binary = local_lib_dir / "llama-kv-dump"
     if not local_binary.exists():
         raise FileNotFoundError(f"Expected llama-server at {local_binary}")
+    if not local_kv_dump_binary.exists():
+        raise FileNotFoundError(f"Expected llama-kv-dump at {local_kv_dump_binary}")
 
     cache_dir.mkdir(parents=True, exist_ok=True)
     if cached_lib_dir.exists():
@@ -353,6 +371,7 @@ def ensure_llama_server(
         llama_root=llama_root,
         llama_repo_url=llama_repo_url,
         binary_path=local_binary,
+        kv_dump_binary_path=local_kv_dump_binary,
         lib_dir=local_lib_dir,
         cache_dir=cache_dir,
         cuda_arch=cuda_arch,
@@ -462,6 +481,21 @@ def find_latest_run_file(results_dir: str | Path, *, model_id: str | None = None
     return None
 
 
+def _detect_llama_binary(
+    repo_root: str | Path,
+    binary_name: str,
+    *,
+    profile: str,
+) -> Path | None:
+    root = Path(repo_root).resolve()
+    build_dirs = ["build-colab", "build"] if profile == "colab" else ["build", "build-colab"]
+    for build_dir in build_dirs:
+        candidate = root / "llama.cpp" / build_dir / "bin" / binary_name
+        if candidate.exists():
+            return candidate
+    return None
+
+
 def build_run_bench_command(
     repo_root: str | Path,
     *,
@@ -478,6 +512,8 @@ def build_run_bench_command(
     output_path: str | Path | None = None,
     resume_path: str | Path | None = None,
     slot_save_path: str | Path | None = None,
+    server_binary_path: str | Path | None = None,
+    kv_dump_binary_path: str | Path | None = None,
 ) -> list[str]:
     root = Path(repo_root).resolve()
     cmd = [
@@ -510,4 +546,18 @@ def build_run_bench_command(
         cmd.extend(["--resume", str(Path(resume_path).expanduser().resolve())])
     if slot_save_path is not None:
         cmd.extend(["--slot-save-path", str(Path(slot_save_path).expanduser().resolve())])
+    resolved_server_binary = (
+        Path(server_binary_path).expanduser().resolve()
+        if server_binary_path is not None
+        else _detect_llama_binary(root, "llama-server", profile=profile)
+    )
+    if resolved_server_binary is not None:
+        cmd.extend(["--server-binary", str(resolved_server_binary)])
+    resolved_kv_dump_binary = (
+        Path(kv_dump_binary_path).expanduser().resolve()
+        if kv_dump_binary_path is not None
+        else _detect_llama_binary(root, "llama-kv-dump", profile=profile)
+    )
+    if resolved_kv_dump_binary is not None:
+        cmd.extend(["--kv-dump-binary", str(resolved_kv_dump_binary)])
     return cmd

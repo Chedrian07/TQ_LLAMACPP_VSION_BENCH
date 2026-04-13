@@ -71,12 +71,12 @@ from tq_bench.env import default_server_binary, prepend_ld_library_path, project
 # ---------------------------------------------------------------------------
 
 _PROJECT = project_root_from(__file__)
-_BUILD_BIN = _PROJECT / "llama.cpp" / "build" / "bin"
-prepend_ld_library_path(_BUILD_BIN)
+_DEFAULT_BUILD_BIN = _PROJECT / "llama.cpp" / "build" / "bin"
+prepend_ld_library_path(_DEFAULT_BUILD_BIN)
 
 BENCH_DIR = Path(__file__).resolve().parent
-SERVER_BINARY = default_server_binary(_PROJECT)
-KV_DUMP_BINARY = _BUILD_BIN / "llama-kv-dump"
+DEFAULT_SERVER_BINARY = default_server_binary(_PROJECT)
+DEFAULT_KV_DUMP_BINARY = _DEFAULT_BUILD_BIN / "llama-kv-dump"
 RESULTS_DIR = _PROJECT / "results/runs"
 LOGS_DIR = _PROJECT / "logs"
 PROFILES_YAML = BENCH_DIR / "configs/profiles.yaml"
@@ -251,6 +251,10 @@ def main():
                         help="Select which model weight quantization variant to use.")
     parser.add_argument("--port", type=int, default=None,
                         help="Override server port (default: from models.yaml)")
+    parser.add_argument("--server-binary", type=str, default=None,
+                        help="Path to llama-server when using a non-default build directory.")
+    parser.add_argument("--kv-dump-binary", type=str, default=None,
+                        help="Path to llama-kv-dump when using a non-default build directory.")
     parser.add_argument("--results-dir", type=str, default=None,
                         help="Directory for auto-generated output JSONs.")
     parser.add_argument("--slot-save-path", type=str, default=None,
@@ -369,6 +373,25 @@ def main():
             sys.exit(1)
         selected_models[0] = replace(selected_models[0], parallel_requests=args.parallel)
 
+    server_binary = _resolve_path_override(args.server_binary) or DEFAULT_SERVER_BINARY
+    kv_dump_binary = _resolve_path_override(args.kv_dump_binary) or DEFAULT_KV_DUMP_BINARY
+
+    if not server_binary.exists():
+        logger.error(
+            "llama-server binary not found: %s. Build llama.cpp or pass --server-binary.",
+            server_binary,
+        )
+        sys.exit(1)
+    if args.kv_dump and not kv_dump_binary.exists():
+        logger.error(
+            "llama-kv-dump binary not found: %s. Build llama-kv-dump or pass --kv-dump-binary.",
+            kv_dump_binary,
+        )
+        sys.exit(1)
+
+    prepend_ld_library_path(server_binary.parent)
+    prepend_ld_library_path(kv_dump_binary.parent)
+
     results_dir = _resolve_path_override(args.results_dir) or profile.results_dir or RESULTS_DIR
     slot_save_path = _resolve_path_override(args.slot_save_path) or profile.slot_save_path or Path("./kvcache")
     cache_ram = (
@@ -404,6 +427,8 @@ def main():
         logger.error("--ubatch-size must be >= 1.")
         sys.exit(1)
     server_meta = {
+        "server_binary": str(server_binary),
+        "kv_dump_binary": str(kv_dump_binary),
         "batch_size": batch_size,
         "ubatch_size": ubatch_size,
         "n_gpu_layers": n_gpu_layers,
@@ -516,8 +541,10 @@ def main():
         ],
     )
     logger.info(
-        "  Server:     batch=%d ubatch=%d ngl=%d cache_ram=%d slot_save_path=%s "
+        "  Server:     binary=%s kv_dump=%s batch=%d ubatch=%d ngl=%d cache_ram=%d slot_save_path=%s "
         "no_warmup=%s no_mmap=%s",
+        server_binary,
+        kv_dump_binary,
         batch_size,
         ubatch_size,
         n_gpu_layers,
@@ -584,7 +611,7 @@ def main():
         model_gpu_id = model_config.gpu_id
         base_parallel = model_config.parallel_requests or 4
         runner = BenchmarkRunner(
-            server_binary=SERVER_BINARY,
+            server_binary=server_binary,
             default_port=model_port,
             request_timeout=180.0,
             max_retries=2,
@@ -711,7 +738,7 @@ def main():
                     )
 
             # -- KV dump for this runtime (server is stopped, GPU is free) --
-            if args.kv_dump and KV_DUMP_BINARY.exists():
+            if args.kv_dump and kv_dump_binary.exists():
                 _inline_kv_dump(
                     rt=rt,
                     model_config=model_config,
@@ -724,6 +751,7 @@ def main():
                     analysis_pool=analysis_pool,
                     state_lock=state_lock,
                     n_gpu_layers_=n_gpu_layers,
+                    kv_dump_binary=kv_dump_binary,
                 )
 
     max_workers = len(selected_models) if len(selected_models) > 1 else 1
@@ -838,13 +866,14 @@ def _inline_kv_dump(
     analysis_pool,
     state_lock,
     n_gpu_layers_,
+    kv_dump_binary,
 ):
     """Run llama-kv-dump for one runtime, then kick off analysis in background."""
     from tq_bench.kv_dump_runner import KVDumpConfig, run_kv_dump
 
     dump_dir = LOGS_DIR / "kv_analysis" / f"{model_config.id}_{kv_ts}" / "dumps" / rt.id
     config = KVDumpConfig(
-        kv_dump_binary=KV_DUMP_BINARY,
+        kv_dump_binary=kv_dump_binary,
         model_config=model_config,
         runtime=rt,
         output_dir=dump_dir,

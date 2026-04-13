@@ -5,8 +5,10 @@ import time
 from pathlib import Path
 
 from tq_bench.colab import (
+    _detect_llama_binary,
     _repo_slug_from_url,
     build_run_bench_command,
+    detect_cuda_architecture,
     find_latest_run_file,
 )
 
@@ -14,6 +16,10 @@ from tq_bench.colab import (
 def test_build_run_bench_command_includes_colab_overrides(tmp_path: Path) -> None:
     repo_root = tmp_path / "repo"
     (repo_root / "bench").mkdir(parents=True)
+    build_colab_bin = repo_root / "llama.cpp" / "build-colab" / "bin"
+    build_colab_bin.mkdir(parents=True)
+    (build_colab_bin / "llama-server").write_text("", encoding="utf-8")
+    (build_colab_bin / "llama-kv-dump").write_text("", encoding="utf-8")
     cmd = build_run_bench_command(
         repo_root,
         num=10,
@@ -36,6 +42,60 @@ def test_build_run_bench_command_includes_colab_overrides(tmp_path: Path) -> Non
     assert "--output" in cmd
     assert "--resume" in cmd
     assert "--slot-save-path" in cmd
+    assert "--server-binary" in cmd
+    assert str(build_colab_bin / "llama-server") in joined
+    assert "--kv-dump-binary" in cmd
+    assert str(build_colab_bin / "llama-kv-dump") in joined
+
+
+def test_detect_llama_binary_prefers_colab_build_for_colab_profile(tmp_path: Path) -> None:
+    repo_root = tmp_path / "repo"
+    build_bin = repo_root / "llama.cpp" / "build" / "bin"
+    build_colab_bin = repo_root / "llama.cpp" / "build-colab" / "bin"
+    build_bin.mkdir(parents=True)
+    build_colab_bin.mkdir(parents=True)
+    (build_bin / "llama-server").write_text("", encoding="utf-8")
+    (build_colab_bin / "llama-server").write_text("", encoding="utf-8")
+
+    assert _detect_llama_binary(repo_root, "llama-server", profile="colab") == (
+        build_colab_bin / "llama-server"
+    )
+    assert _detect_llama_binary(repo_root, "llama-server", profile="local") == (
+        build_bin / "llama-server"
+    )
+
+
+def test_detect_cuda_architecture_fallback_supports_colab_gpu_names(monkeypatch) -> None:
+    cases = [
+        ("Tesla T4", "75"),
+        ("NVIDIA L40S", "89"),
+        ("NVIDIA A100-SXM4-40GB", "80"),
+        ("NVIDIA H100 80GB HBM3", "90"),
+        ("NVIDIA RTX PRO 6000 Blackwell Server Edition", "120"),
+    ]
+
+    for name, expected_arch in cases:
+        def fake_run_text(cmd, *, cwd=None, env=None, gpu_name=name):
+            del cwd, env
+            if "--query-gpu=compute_cap" in cmd[1]:
+                raise RuntimeError("compute capability unsupported")
+            if "--query-gpu=name" in cmd[1]:
+                return gpu_name
+            raise AssertionError(cmd)
+
+        monkeypatch.setattr("tq_bench.colab._run_text", fake_run_text)
+        assert detect_cuda_architecture() == expected_arch
+
+
+def test_detect_cuda_architecture_uses_compute_cap_when_available(monkeypatch) -> None:
+    def fake_run_text(cmd, *, cwd=None, env=None):
+        del cwd, env
+        if "--query-gpu=compute_cap" in cmd[1]:
+            return "12.0"
+        raise AssertionError(cmd)
+
+    monkeypatch.setattr("tq_bench.colab._run_text", fake_run_text)
+    assert detect_cuda_architecture() == "120"
 
 
 def test_find_latest_run_file_prefers_latest_matching_model(tmp_path: Path) -> None:

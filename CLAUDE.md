@@ -156,6 +156,7 @@ Current model config also stores:
 - `LlamaApiClient` parses `usage` + `timings` into `CompletionTimings`.
 - `RunRecord` stores score, failure counts, latency stats, throughput stats, and resource snapshots.
 - `run_bench.py` supports matrix execution, resume, output merging, and inline KV dump scheduling.
+- Colab helpers can build into `llama.cpp/build-colab/` and pass explicit binary overrides into `run_bench.py`.
 - `Orchestrator` supports mixed-model / dual-GPU lane assignment.
 - `tq_bench/kv_analysis/` provides distribution, outlier, quant-error, rotation, and attention analyses.
 

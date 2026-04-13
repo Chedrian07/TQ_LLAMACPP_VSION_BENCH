@@ -54,6 +54,7 @@ Generated artifacts under `results/` and `logs/` are not the source of truth for
 - Dataset loaders for 8 VLM benchmarks and 3 text benchmarks.
 - Evaluator registry with both approximate and official-style scorers.
 - `run_bench.py` for matrix execution over `llama-server`.
+- `run_bench.py` binary overrides for non-default build trees (`--server-binary`, `--kv-dump-binary`).
 - Mixed-model / dual-GPU orchestration support.
 - KV-dump extraction plus Python-side KV analysis and reporting.
 
