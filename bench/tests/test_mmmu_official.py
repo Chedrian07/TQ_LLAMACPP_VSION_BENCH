@@ -14,6 +14,8 @@ def test_mmmu_eval_only(case):
     assert score == pytest.approx(case["expected"], abs=1e-6), (
         f'{case["name"]}: got {score}, expected {case["expected"]}'
     )
+
+
 def test_mmmu_eval_only_prefers_numeric_answer_over_trailing_letter():
     ev = MMMUEvalOnlyEvaluator()
     score = ev.score(

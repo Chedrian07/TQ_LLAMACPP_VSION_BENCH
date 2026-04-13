@@ -896,7 +896,7 @@ class BenchmarkRunner:
                             "url": f"data:image/jpeg;base64,{image_base64}",
                         },
                     }
-                )
+            )
             user_content.append(
                 {
                     "type": "text",

@@ -32,6 +32,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
+from .attention_analysis import compare_attention_from_dumps
 from .distribution import compute_per_layer_stats
 from .layer_plots import plot_kv_norm_ratio_curve, plot_layer_distortion_curves
 from .loader import KVDump, load_dump
@@ -162,6 +163,41 @@ def _plot_rotation_quality(
     plt.close(fig)
 
 
+def _plot_attention_comparison(
+    attn_df: pd.DataFrame,
+    out_path: Path,
+) -> None:
+    if attn_df.empty:
+        return
+    fig, axes = plt.subplots(1, 3, figsize=(15, 4))
+    for (run, tt), sub in attn_df.groupby(["run", "token_type"]):
+        sub = sub.sort_values("layer")
+        label = f"{run} ({tt})"
+        axes[0].plot(sub["layer"], sub["kl_divergence"], marker="o", label=label, markersize=3)
+        axes[1].plot(sub["layer"], sub["top1_match_rate"], marker="o", label=label, markersize=3)
+        axes[2].plot(sub["layer"], sub["entropy_delta"], marker="o", label=label, markersize=3)
+    axes[0].set_title("KL divergence per layer")
+    axes[0].set_xlabel("layer")
+    axes[0].set_ylabel("KL(baseline || quant)")
+    axes[0].grid(True, alpha=0.3)
+    axes[0].legend(fontsize=6)
+    axes[1].set_title("Top-1 attention match rate per layer")
+    axes[1].set_xlabel("layer")
+    axes[1].set_ylabel("match rate")
+    axes[1].set_ylim(-0.05, 1.05)
+    axes[1].grid(True, alpha=0.3)
+    axes[1].legend(fontsize=6)
+    axes[2].set_title("Attention entropy delta per layer")
+    axes[2].set_xlabel("layer")
+    axes[2].set_ylabel("entropy(quant) - entropy(base)")
+    axes[2].axhline(0, color="gray", linestyle="--", alpha=0.5)
+    axes[2].grid(True, alpha=0.3)
+    axes[2].legend(fontsize=6)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+
+
 def _plot_quant_error_per_layer(
     quant_df: pd.DataFrame,
     out_path: Path,
@@ -269,6 +305,31 @@ def _markdown_section_rotation(rotation_df: pd.DataFrame) -> str:
         rows.append(
             f"| {run} | {tt} | {knd} | {_fmt_num(row['mean_ks'])} | "
             f"{_fmt_num(row['mean_p'])} | {_fmt_num(row['mean_corr'])} |"
+        )
+    return "\n".join(rows) + "\n"
+
+
+def _markdown_section_attention(attn_df: pd.DataFrame) -> str:
+    if attn_df.empty:
+        return "## Attention analysis\n\n_no data_\n"
+    rows = [
+        "## Attention analysis (baseline K as Q probe)",
+        "",
+        "| run | token_type | mean KL | mean JS | top-1 match | top-5 Jaccard | entropy delta |",
+        "| --- | --- | --- | --- | --- | --- | --- |",
+    ]
+    agg = attn_df.groupby(["run", "token_type"]).agg(
+        kl=("kl_divergence", "mean"),
+        js=("js_divergence", "mean"),
+        top1=("top1_match_rate", "mean"),
+        topk=("topk_overlap_k5", "mean"),
+        edelta=("entropy_delta", "mean"),
+    )
+    for (run, tt), row in agg.iterrows():
+        rows.append(
+            f"| {run} | {tt} | {_fmt_num(row['kl'])} | "
+            f"{_fmt_num(row['js'])} | {_fmt_num(row['top1'])} | "
+            f"{_fmt_num(row['topk'])} | {_fmt_num(row['edelta'])} |"
         )
     return "\n".join(rows) + "\n"
 
@@ -401,6 +462,24 @@ def generate_full_report(
     theo_df.to_csv(theo_path, index=False)
 
     # -----------------------------------------------------------------
+    # Attention analysis (K-as-Q-probe)
+    # -----------------------------------------------------------------
+    attn_frames: list[pd.DataFrame] = []
+    for name, dump in quant_map.items():
+        try:
+            df = compare_attention_from_dumps(baseline, dump)
+            attn_frames.append(_tag_run(df, name))
+        except Exception:
+            logger.exception("attention analysis failed for %s (non-fatal)", name)
+    attn_df = (
+        pd.concat(attn_frames, ignore_index=True)
+        if attn_frames and any(not f.empty for f in attn_frames)
+        else pd.DataFrame()
+    )
+    attn_path = output_dir / "attention_analysis.csv"
+    attn_df.to_csv(attn_path, index=False)
+
+    # -----------------------------------------------------------------
     # Rotation analysis
     # -----------------------------------------------------------------
     rotation_frames: list[pd.DataFrame] = []
@@ -434,6 +513,7 @@ def generate_full_report(
                 plots_dir / "rotation_quality_baseline.png",
             )
             _plot_quant_error_per_layer(quant_df, plots_dir / "quant_error_per_layer.png")
+            _plot_attention_comparison(attn_df, plots_dir / "attention_comparison.png")
 
             # Layer-wise curve plots (norm ratio + distortion)
             plot_kv_norm_ratio_curve(dist_df, out_path=plots_dir / "kv_norm_ratio_curve.png")
@@ -455,6 +535,8 @@ def generate_full_report(
     md_parts.append(_markdown_section_rotation(rotation_df))
     md_parts.append("\n")
     md_parts.append(_markdown_section_quant(quant_df))
+    md_parts.append("\n")
+    md_parts.append(_markdown_section_attention(attn_df))
 
     md_path = output_dir / "report.md"
     md_path.write_text("\n".join(md_parts), encoding="utf-8")
@@ -465,5 +547,6 @@ def generate_full_report(
         "quant_errors": quant_path,
         "quant_theoretical_comparison": theo_path,
         "rotation_analysis": rotation_path,
+        "attention_analysis": attn_path,
         "report_md": md_path,
     }

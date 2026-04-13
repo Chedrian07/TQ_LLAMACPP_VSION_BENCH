@@ -76,7 +76,9 @@ prepend_ld_library_path(_BUILD_BIN)
 
 BENCH_DIR = Path(__file__).resolve().parent
 SERVER_BINARY = default_server_binary(_PROJECT)
+KV_DUMP_BINARY = _BUILD_BIN / "llama-kv-dump"
 RESULTS_DIR = _PROJECT / "results/runs"
+LOGS_DIR = _PROJECT / "logs"
 PROFILES_YAML = BENCH_DIR / "configs/profiles.yaml"
 
 # ---------------------------------------------------------------------------
@@ -266,6 +268,12 @@ def main():
                         help="Output JSON path (auto-generated if omitted)")
     parser.add_argument("--resume", type=str, default=None,
                         help="Resume from existing JSON (skip completed cells)")
+    parser.add_argument("--kv-dump", action="store_true", default=False,
+                        help="After benchmarks, extract KV dumps + run analysis for each runtime")
+    parser.add_argument("--kv-dump-image", type=str, default=None,
+                        help="Image path for VLM KV dump probe (default: first image from ai2d dataset)")
+    parser.add_argument("--kv-dump-prompt", type=str, default=None,
+                        help="Prompt for KV dump probe (default: 'Describe this image in detail.')")
     args = parser.parse_args()
 
     from tq_bench.config import (
@@ -549,6 +557,26 @@ def main():
     state_lock = threading.Lock()
     progress_counter = {"done": len(completed_keys)}
 
+    # KV dump: resolve probe sample once (reused across all runtimes)
+    kv_probe_image_path: Path | None = None
+    kv_probe_prompt: str = "Describe this image in detail."
+    if args.kv_dump:
+        kv_probe_prompt = args.kv_dump_prompt or kv_probe_prompt
+        if args.kv_dump_image:
+            kv_probe_image_path = Path(args.kv_dump_image).expanduser().resolve()
+        else:
+            kv_probe_image_path = _resolve_kv_probe_image()
+        if kv_probe_image_path is None:
+            kv_probe_prompt = "Explain the concept of quantization in neural networks."
+            logger.info("KV dump: no image available, using text-only probe.")
+        else:
+            logger.info("KV dump: probe image=%s", kv_probe_image_path)
+
+    kv_ts = datetime.now().strftime("%m%d_%H%M")
+    kv_dump_paths: dict[str, dict[str, Path]] = {}  # model_id -> {rt_id -> dump_dir}
+    analysis_futures: list = []
+    analysis_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="kv-analysis") if args.kv_dump else None
+
     def run_model_queue(lane_idx, model_config):
         threading.current_thread().name = f"lane-{model_config.id}"
 
@@ -682,6 +710,22 @@ def main():
                         time.monotonic() - t_global,
                     )
 
+            # -- KV dump for this runtime (server is stopped, GPU is free) --
+            if args.kv_dump and KV_DUMP_BINARY.exists():
+                _inline_kv_dump(
+                    rt=rt,
+                    model_config=model_config,
+                    gpu_id=model_gpu_id,
+                    kv_ts=kv_ts,
+                    probe_prompt=kv_probe_prompt,
+                    probe_image=kv_probe_image_path,
+                    kv_dump_paths=kv_dump_paths,
+                    analysis_futures=analysis_futures,
+                    analysis_pool=analysis_pool,
+                    state_lock=state_lock,
+                    n_gpu_layers_=n_gpu_layers,
+                )
+
     max_workers = len(selected_models) if len(selected_models) > 1 else 1
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
         futures = [
@@ -710,6 +754,128 @@ def main():
 
     # Print summary
     _print_summary(selected_models, runtimes, benchmarks, scores, statuses, args.num, total_time)
+
+    # Wait for background KV analysis threads to finish
+    if analysis_futures:
+        logger.info("Waiting for %d background KV analysis tasks...", len(analysis_futures))
+        for fut in analysis_futures:
+            try:
+                fut.result(timeout=120)
+            except Exception as exc:
+                logger.warning("Background KV analysis error: %s", exc)
+        logger.info("All KV analysis tasks complete.")
+    if analysis_pool is not None:
+        analysis_pool.shutdown(wait=False)
+
+    if args.kv_dump and kv_dump_paths:
+        logger.info("KV dump results saved to: %s", LOGS_DIR / "kv_analysis")
+        for model_id, rt_paths in kv_dump_paths.items():
+            for rt_id, path in rt_paths.items():
+                logger.info("  %s/%s → %s", model_id, rt_id, path)
+
+
+# ---------------------------------------------------------------------------
+# KV dump (inline, per-runtime)
+# ---------------------------------------------------------------------------
+
+def _resolve_kv_probe_image() -> Path | None:
+    """Try to grab the first image from ai2d dataset as a default probe."""
+    try:
+        from tq_bench.datasets.vlm import AI2DDataset
+        ds = AI2DDataset()
+        ds.load(1, seed=42)
+        sample = next(ds.iter_samples())
+        image = sample.get("image")
+        if image is not None:
+            import tempfile
+            tmp = Path(tempfile.mkdtemp()) / "kv_dump_probe.jpg"
+            image.save(str(tmp), format="JPEG", quality=90)
+            return tmp
+    except Exception as exc:
+        logger.debug("Could not load default probe image from ai2d: %s", exc)
+    return None
+
+
+def _run_analysis_background(
+    baseline_path: Path,
+    quant_path: Path,
+    rt_id: str,
+    analysis_dir: Path,
+    bits: str,
+):
+    """Run KV comparative analysis (CPU-only, safe for background thread)."""
+    try:
+        from tq_bench.kv_analysis.report import generate_full_report
+
+        bits_by_run: dict[str, int] = {}
+        try:
+            bits_str = bits.split("/")[0] if "/" in str(bits) else str(bits)
+            bits_by_run[rt_id] = int(float(bits_str))
+        except (ValueError, TypeError):
+            pass
+
+        generate_full_report(
+            baseline_dump=baseline_path,
+            quant_dumps={rt_id: quant_path},
+            output_dir=analysis_dir,
+            bits_by_run=bits_by_run if bits_by_run else None,
+        )
+        logger.info("KV analysis done: %s → %s", rt_id, analysis_dir)
+    except Exception:
+        logger.exception("KV analysis failed for %s (non-fatal)", rt_id)
+
+
+def _inline_kv_dump(
+    *,
+    rt,
+    model_config,
+    gpu_id,
+    kv_ts,
+    probe_prompt,
+    probe_image,
+    kv_dump_paths,
+    analysis_futures,
+    analysis_pool,
+    state_lock,
+    n_gpu_layers_,
+):
+    """Run llama-kv-dump for one runtime, then kick off analysis in background."""
+    from tq_bench.kv_dump_runner import KVDumpConfig, run_kv_dump
+
+    dump_dir = LOGS_DIR / "kv_analysis" / f"{model_config.id}_{kv_ts}" / "dumps" / rt.id
+    config = KVDumpConfig(
+        kv_dump_binary=KV_DUMP_BINARY,
+        model_config=model_config,
+        runtime=rt,
+        output_dir=dump_dir,
+        prompt=probe_prompt,
+        image_path=probe_image,
+        gpu_id=gpu_id,
+        n_gpu_layers=n_gpu_layers_,
+    )
+
+    logger.info("[KV-DUMP] %s (cache_k=%s, cache_v=%s) ...",
+                rt.id, rt.cache_type_k, rt.cache_type_v)
+
+    if not run_kv_dump(config):
+        logger.warning("[KV-DUMP] Failed for %s, skipping", rt.id)
+        return
+
+    with state_lock:
+        kv_dump_paths.setdefault(model_config.id, {})[rt.id] = dump_dir
+
+    # If this is not the baseline, and we have a baseline dump, run analysis in background
+    baseline_path = kv_dump_paths.get(model_config.id, {}).get("baseline")
+    if baseline_path and rt.id != "baseline" and analysis_pool is not None:
+        analysis_dir = (
+            LOGS_DIR / "kv_analysis" / f"{model_config.id}_{kv_ts}" / "analysis" / rt.id
+        )
+        fut = analysis_pool.submit(
+            _run_analysis_background,
+            baseline_path, dump_dir, rt.id, analysis_dir, rt.bits,
+        )
+        with state_lock:
+            analysis_futures.append(fut)
 
 
 # ---------------------------------------------------------------------------

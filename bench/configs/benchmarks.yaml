@@ -14,7 +14,7 @@ benchmarks:
     type: vlm
     sample_count: 500
     metric: option_match
-    max_tokens: 1024  # MMMU STEM questions need long CoT
+    max_tokens: 2048  # MMMU STEM questions often exhaust 1024 before final answer
     parity_metric: mmmu_official      # raw official parse-and-eval flow
     parity_sample_count: -1           # full 900-sample validation
 

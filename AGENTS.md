@@ -22,6 +22,7 @@ This file is the short operational guide for coding agents working in this repos
 ├── bench/             # Python benchmark framework
 ├── models/            # local GGUF/mmproj files, ignored by git
 ├── results/           # experiment outputs, ignored by git
+├── logs/              # KV analysis outputs (kv_analysis/<model>_<ts>/), ignored by git
 └── pdfs/              # reference papers
 ```
 
@@ -48,7 +49,8 @@ The benchmark framework is fully implemented (~13,000 lines):
 - `configs/` for runtime (14), benchmark (11), model (2+), and profile YAML
 - `tq_bench/` Python package: runner, orchestrator, server, client, datasets×11, evaluators×12
 - `tq_bench/evaluators/` includes 4 **official parity evaluators** (`mmmu_official`, `mathvista_official`, `textvqa_official`, `chartqapro_official`) alongside 6 existing approximate evaluators + 2 aliases
-- `tq_bench/kv_analysis/` for KV dump statistics and visualization (134 tests)
+- `tq_bench/kv_analysis/` for KV dump statistics, attention comparison (K-as-Q-probe), and visualization (139 tests)
+- `tq_bench/kv_dump_runner.py` wraps C++ `llama-kv-dump` + Python `kv_analysis` into a single pipeline
 - `notebooks/` for thin execution wrappers
 - `reporters/` for CSV/JSON/markdown/chart export (auto-detects timing data for extended tables)
 - `tests/` for golden parity evaluator tests (85 tests)
@@ -91,8 +93,10 @@ As of 2026-04-13, phases 1-8.5 are complete:
   per-sample timing/token instrumentation (TTFT, latency, tok/s, GPU memory),
   aggregate stats (score std/median, latency p50/p95/p99), and a unified CLI
   runner (`run_bench.py`).
-- 219 tests passing (85 parity golden + 134 KV analysis).
+- 224 tests passing (85 parity golden + 139 KV analysis).
 - Parity smoke test completed: baseline × 3 VLM × n=10.
+- Inline KV dump pipeline: `--kv-dump` flag interleaves dump extraction between
+  runtime switches (GPU, ~10s per runtime), Python analysis runs in background (CPU).
 
 ## Immediate Priorities
 
@@ -128,14 +132,14 @@ The intended flow is:
 
 1. Load YAML configs
 2. Build runtime × benchmark matrix
-3. Launch `llama-server` with the requested KV cache types
-4. Query the OpenAI-compatible API
-5. Extract per-sample timing/token data from response
-6. Evaluate outputs
-7. Compute aggregate stats (score std/median, latency percentiles, throughput)
-8. Snapshot GPU memory and KV cache usage
-9. Persist checkpoints and result artifacts
-10. Generate CSV, JSON, and markdown summaries (with timing columns when available)
+3. For each runtime:
+   a. Launch `llama-server` with the requested KV cache types
+   b. For each benchmark: query OpenAI-compatible API, extract per-sample timing/token data, evaluate, compute aggregate stats
+   c. Snapshot GPU memory, persist checkpoints
+   d. Stop `llama-server`
+   e. **If `--kv-dump`**: run `llama-kv-dump` on same GPU (~10s), kick off Python analysis in background thread (CPU)
+4. Wait for all background KV analysis threads
+5. Generate CSV, JSON, markdown summaries, and KV analysis reports
 
 Dual-GPU execution is a requirement for the orchestrator design.
 
@@ -154,12 +158,12 @@ Dual-GPU execution is a requirement for the orchestrator design.
 - Decode throughput: mean, min, max
 - GPU memory (bytes), KV cache tokens
 
-**KV cache analysis** (offline, via kv_analysis/):
+**KV cache analysis** (inline via `--kv-dump` or offline via kv_analysis/):
 - Per-layer K/V distribution: mean, std, min, max, quantiles (q01-q99)
 - L2 norm distribution, K/V norm ratio, outlier channel ratio (10x median)
 - Vision vs text token separation for all above
 - Quant error: per-coordinate MSE, cosine similarity, inner product bias, vs theoretical
-- Attention: KL divergence, top-1 match, entropy
+- Attention comparison (K-as-Q-probe): KL divergence, JS divergence, top-1 match rate, top-5 Jaccard overlap, entropy baseline/quantized/delta — per layer × vision/text
 - Rotation: Beta KS test, coordinate independence, vision vs text
 
 ## Build And Run
@@ -188,7 +192,7 @@ uv run jupyter lab
 ```bash
 python3 -m compileall bench/tq_bench
 cd bench && uv run pytest tests/ -q          # 85 parity evaluator tests
-cd bench && uv run pytest tq_bench/kv_analysis/tests/ -q  # 134 KV analysis tests
+cd bench && uv run pytest tq_bench/kv_analysis/tests/ -q  # 139 KV analysis tests
 ```
 
 ### Running benchmarks
@@ -198,14 +202,17 @@ cd bench
 # Quick smoke (10 samples, 5 core runtimes, P0 benchmarks)
 uv run python run_bench.py --num 10
 
-# Full P0 run (100 samples)
-uv run python run_bench.py --num 100
+# Full P0 run (100 samples) + KV dump/analysis
+uv run python run_bench.py --num 100 --kv-dump
 
 # All runtimes × all benchmarks
-uv run python run_bench.py --num 100 --runtimes all --benchmarks all
+uv run python run_bench.py --num 100 --runtimes all --benchmarks all --kv-dump
 
 # Thinking model
 uv run python run_bench.py --num 30 --model qwen3_vl_2b_thinking
+
+# Custom KV dump probe image
+uv run python run_bench.py --num 50 --kv-dump --kv-dump-image path/to/chart.png
 ```
 
 ## Notes For Agents
