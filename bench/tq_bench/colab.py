@@ -146,9 +146,53 @@ def ensure_llama_cpp_checkout(
 
 def install_bench_editable(repo_root: str | Path) -> None:
     root = Path(repo_root).resolve()
-    subprocess.run(
-        [sys.executable, "-m", "pip", "install", "-e", str(root / "bench")],
-        check=True,
+    bench_dir = root / "bench"
+    base_cmd = [sys.executable, "-m", "pip", "install", "-e", str(bench_dir)]
+    result = subprocess.run(
+        base_cmd,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode == 0:
+        return
+
+    combined = f"{result.stdout}\n{result.stderr}".lower()
+    if (
+        "externally-managed-environment" in combined
+        or "externally managed" in combined
+        or "break-system-packages" in combined
+    ):
+        retry_cmd = [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "--break-system-packages",
+            "-e",
+            str(bench_dir),
+        ]
+        retry = subprocess.run(
+            retry_cmd,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if retry.returncode == 0:
+            return
+        raise RuntimeError(
+            "Editable install of bench/ failed even after retrying with "
+            "--break-system-packages.\n"
+            f"Command: {' '.join(retry_cmd)}\n"
+            f"--- stdout tail ---\n{(retry.stdout or '').strip()[-4000:]}\n"
+            f"--- stderr tail ---\n{(retry.stderr or '').strip()[-4000:]}"
+        )
+
+    raise RuntimeError(
+        "Editable install of bench/ failed.\n"
+        f"Command: {' '.join(base_cmd)}\n"
+        f"--- stdout tail ---\n{(result.stdout or '').strip()[-4000:]}\n"
+        f"--- stderr tail ---\n{(result.stderr or '').strip()[-4000:]}"
     )
 
 

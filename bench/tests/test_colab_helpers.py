@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 from tq_bench.colab import (
     _detect_llama_binary,
@@ -10,6 +11,7 @@ from tq_bench.colab import (
     build_run_bench_command,
     detect_cuda_architecture,
     find_latest_run_file,
+    install_bench_editable,
 )
 
 
@@ -96,6 +98,53 @@ def test_detect_cuda_architecture_uses_compute_cap_when_available(monkeypatch) -
 
     monkeypatch.setattr("tq_bench.colab._run_text", fake_run_text)
     assert detect_cuda_architecture() == "120"
+
+
+def test_install_bench_editable_retries_with_break_system_packages(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    repo_root = tmp_path / "repo"
+    (repo_root / "bench").mkdir(parents=True)
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, check, capture_output, text):
+        del check, capture_output, text
+        calls.append(cmd)
+        if "--break-system-packages" in cmd:
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        return SimpleNamespace(
+            returncode=1,
+            stdout="",
+            stderr="error: externally-managed-environment",
+        )
+
+    monkeypatch.setattr("tq_bench.colab.subprocess.run", fake_run)
+    install_bench_editable(repo_root)
+
+    assert len(calls) == 2
+    assert "--break-system-packages" not in calls[0]
+    assert "--break-system-packages" in calls[1]
+
+
+def test_install_bench_editable_raises_with_pip_output(tmp_path: Path, monkeypatch) -> None:
+    repo_root = tmp_path / "repo"
+    (repo_root / "bench").mkdir(parents=True)
+
+    def fake_run(cmd, check, capture_output, text):
+        del cmd, check, capture_output, text
+        return SimpleNamespace(returncode=1, stdout="pip stdout", stderr="pip stderr")
+
+    monkeypatch.setattr("tq_bench.colab.subprocess.run", fake_run)
+
+    try:
+        install_bench_editable(repo_root)
+    except RuntimeError as exc:
+        msg = str(exc)
+        assert "pip stdout" in msg
+        assert "pip stderr" in msg
+    else:
+        raise AssertionError("install_bench_editable should have raised RuntimeError")
 
 
 def test_find_latest_run_file_prefers_latest_matching_model(tmp_path: Path) -> None:
