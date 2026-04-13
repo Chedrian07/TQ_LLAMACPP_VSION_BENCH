@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from tq_bench.colab import (
     _detect_llama_binary,
     _repo_slug_from_url,
+    _nvcc_version,
     build_run_bench_command,
     detect_cuda_architecture,
     find_latest_run_file,
@@ -91,6 +92,9 @@ def test_detect_cuda_architecture_fallback_supports_colab_gpu_names(monkeypatch)
     ]
 
     for name, expected_arch in cases:
+        monkeypatch.setattr("tq_bench.colab._find_tool", lambda tool_name, extra_candidates=None: tool_name)
+        monkeypatch.setattr("tq_bench.colab._detect_cuda_via_torch", lambda: (None, None))
+
         def fake_run_text(cmd, *, cwd=None, env=None, gpu_name=name):
             del cwd, env
             if "--query-gpu=compute_cap" in cmd[1]:
@@ -110,8 +114,45 @@ def test_detect_cuda_architecture_uses_compute_cap_when_available(monkeypatch) -
             return "12.0"
         raise AssertionError(cmd)
 
+    monkeypatch.setattr("tq_bench.colab._find_tool", lambda name, extra_candidates=None: name)
     monkeypatch.setattr("tq_bench.colab._run_text", fake_run_text)
     assert detect_cuda_architecture() == "120"
+
+
+def test_detect_cuda_architecture_falls_back_to_torch(monkeypatch) -> None:
+    monkeypatch.setattr("tq_bench.colab._find_tool", lambda name, extra_candidates=None: None)
+    monkeypatch.setattr("tq_bench.colab._detect_cuda_via_torch", lambda: ("NVIDIA H100 80GB HBM3", "90"))
+    assert detect_cuda_architecture() == "90"
+
+
+def test_detect_cuda_architecture_raises_clear_error_without_gpu(monkeypatch) -> None:
+    monkeypatch.setattr("tq_bench.colab._find_tool", lambda name, extra_candidates=None: None)
+    monkeypatch.setattr("tq_bench.colab._detect_cuda_via_torch", lambda: (None, None))
+
+    try:
+        detect_cuda_architecture()
+    except RuntimeError as exc:
+        assert "nvidia-smi" in str(exc)
+        assert "runtime to GPU" in str(exc)
+    else:
+        raise AssertionError("detect_cuda_architecture should have raised RuntimeError")
+
+
+def test_nvcc_version_uses_common_cuda_path(monkeypatch) -> None:
+    monkeypatch.setattr("tq_bench.colab._find_tool", lambda name, extra_candidates=None: "/usr/local/cuda/bin/nvcc")
+    monkeypatch.setattr("tq_bench.colab._run_text", lambda cmd, *, cwd=None, env=None: "Cuda compilation tools, release 12.8")
+    assert "12.8" in _nvcc_version()
+
+
+def test_nvcc_version_raises_clear_error_when_missing(monkeypatch) -> None:
+    monkeypatch.setattr("tq_bench.colab._find_tool", lambda name, extra_candidates=None: None)
+    try:
+        _nvcc_version()
+    except RuntimeError as exc:
+        assert "nvcc" in str(exc)
+        assert "CUDA toolkit" in str(exc)
+    else:
+        raise AssertionError("_nvcc_version should have raised RuntimeError")
 
 
 def test_install_bench_editable_retries_with_break_system_packages(

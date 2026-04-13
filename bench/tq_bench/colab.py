@@ -282,10 +282,42 @@ def configure_hf_cache(drive_root: str | Path) -> dict[str, Path]:
     return paths
 
 
+def _find_tool(name: str, extra_candidates: list[str] | None = None) -> str | None:
+    found = shutil.which(name)
+    if found is not None:
+        return found
+    for candidate in extra_candidates or []:
+        if Path(candidate).exists():
+            return candidate
+    return None
+
+
+def _detect_cuda_via_torch() -> tuple[str | None, str | None]:
+    try:
+        import torch
+    except Exception:
+        return None, None
+
+    try:
+        if not torch.cuda.is_available():
+            return None, None
+        major, minor = torch.cuda.get_device_capability(0)
+        name = torch.cuda.get_device_name(0)
+        return name, f"{major}{minor}"
+    except Exception:
+        return None, None
+
+
 def _detect_from_compute_cap() -> str | None:
+    nvidia_smi = _find_tool(
+        "nvidia-smi",
+        ["/usr/bin/nvidia-smi", "/usr/local/nvidia/bin/nvidia-smi"],
+    )
+    if nvidia_smi is None:
+        return None
     try:
         value = _run_text(
-            ["nvidia-smi", "--query-gpu=compute_cap", "--format=csv,noheader"]
+            [nvidia_smi, "--query-gpu=compute_cap", "--format=csv,noheader"]
         ).splitlines()[0].strip()
     except Exception:
         return None
@@ -302,7 +334,25 @@ def detect_cuda_architecture() -> str:
     if detected:
         return detected
 
-    name = _run_text(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"]).splitlines()[0].strip()
+    torch_name, torch_arch = _detect_cuda_via_torch()
+    if torch_arch:
+        return torch_arch
+
+    nvidia_smi = _find_tool(
+        "nvidia-smi",
+        ["/usr/bin/nvidia-smi", "/usr/local/nvidia/bin/nvidia-smi"],
+    )
+    if nvidia_smi is not None:
+        try:
+            name = _run_text([nvidia_smi, "--query-gpu=name", "--format=csv,noheader"]).splitlines()[0].strip()
+        except Exception:
+            name = None
+    else:
+        name = None
+
+    if name is None:
+        name = torch_name
+
     fallback_map = (
         ("NVIDIA RTX PRO 6000 Blackwell", "120"),
         ("RTX PRO 6000 Blackwell", "120"),
@@ -319,14 +369,27 @@ def detect_cuda_architecture() -> str:
         ("A100", "80"),
         ("T4", "75"),
     )
-    for needle, arch in fallback_map:
-        if needle in name:
-            return arch
-    raise RuntimeError(f"Could not detect CUDA architecture for GPU '{name}'")
+    if name is not None:
+        for needle, arch in fallback_map:
+            if needle in name:
+                return arch
+        raise RuntimeError(f"Could not detect CUDA architecture for GPU '{name}'")
+
+    raise RuntimeError(
+        "Could not detect a CUDA GPU. `nvidia-smi` is unavailable and "
+        "`torch.cuda` did not report an active CUDA device. In Colab, switch "
+        "the runtime to GPU before building llama.cpp."
+    )
 
 
 def _nvcc_version() -> str:
-    return _run_text(["nvcc", "--version"])
+    nvcc = _find_tool("nvcc", ["/usr/local/cuda/bin/nvcc"])
+    if nvcc is None:
+        raise RuntimeError(
+            "Could not find `nvcc`. A CUDA toolkit is required to build "
+            "llama.cpp with GGML_CUDA=ON."
+        )
+    return _run_text([nvcc, "--version"])
 
 
 def _parse_nvcc_release(version_text: str) -> tuple[int, int] | None:
