@@ -32,6 +32,7 @@ Primary patch targets:
 - `ggml/include/ggml.h`
 - `ggml/src/ggml.c`
 - `ggml/src/ggml-common.h`
+- `ggml/src/ggml-common-turbo.h`
 - `ggml/src/ggml-quants.h`
 - `ggml/src/ggml-quants.c`
 - `ggml/src/ggml-cpu/quants.c`
@@ -42,17 +43,23 @@ Primary patch targets:
 
 ### `bench/`
 
-The benchmark framework is fully implemented:
+The benchmark framework is fully implemented (~13,000 lines):
 
-- `configs/` for runtime (15), benchmark (11), and model (2) YAML
-- `tq_bench/` Python package: runner, orchestrator, server, client, datasets×11, evaluators×10
-- `tq_bench/evaluators/` includes 4 **official parity evaluators** (`mmmu_official`, `mathvista_official`, `textvqa_official`, `chartqapro_official`) alongside 6 existing approximate evaluators
+- `configs/` for runtime (14), benchmark (11), model (2+), and profile YAML
+- `tq_bench/` Python package: runner, orchestrator, server, client, datasets×11, evaluators×12
+- `tq_bench/evaluators/` includes 4 **official parity evaluators** (`mmmu_official`, `mathvista_official`, `textvqa_official`, `chartqapro_official`) alongside 6 existing approximate evaluators + 2 aliases
 - `tq_bench/kv_analysis/` for KV dump statistics and visualization (134 tests)
 - `notebooks/` for thin execution wrappers
-- `reporters/` for CSV/JSON/markdown/chart export
-- `tests/` for golden parity evaluator tests (62 tests)
+- `reporters/` for CSV/JSON/markdown/chart export (auto-detects timing data for extended tables)
+- `tests/` for golden parity evaluator tests (85 tests)
 - `run_bench.py` — unified CLI runner (`--num`, `--runtimes`, `--benchmarks`, `--model`, `--resume`)
 - `docs/OFFICIAL_PARITY_AUDIT.md` — per-benchmark parity gap analysis
+
+**Observability infrastructure (per-sample instrumentation):**
+- `CompletionTimings` in `client.py`: parses llama-server `usage` + `timings` fields, measures wall-clock
+- `SampleResult` records: ttft_ms, total_latency_ms, prefill_ms, decode_ms, decode_throughput_tps, prompt_tokens, completion_tokens, n_images
+- `RunRecord` aggregates: score_std, score_median, LatencyStats (p50/p95/p99), ThroughputStats (mean/min/max), gpu_memory_bytes, kv_cache_bytes
+- `LlamaServer`: nvidia-smi GPU memory query, /slots KV cache query (best-effort)
 
 ## Project Goal
 
@@ -74,15 +81,17 @@ Main research claim to validate:
 
 ## Current Status
 
-As of 2026-04-12, phases 1-8.5 are complete:
+As of 2026-04-13, phases 1-8.5 are complete:
 
 - `llama.cpp/` contains TurboQuant MSE and prod GGML types, CUDA KV write/dequant
   paths, flash-attention integration, KV dump tooling, and CLI wiring.
 - `bench/` contains a production benchmark framework with official parity evaluators
   for P0 benchmarks (AI2D, MMMU, MathVista), parallel sample requests, dual-GPU
   orchestration, checkpoint/resume, `<think>` strip for Thinking models,
-  and a unified CLI runner (`run_bench.py`).
-- 196 tests passing (62 parity golden + 134 KV analysis).
+  per-sample timing/token instrumentation (TTFT, latency, tok/s, GPU memory),
+  aggregate stats (score std/median, latency p50/p95/p99), and a unified CLI
+  runner (`run_bench.py`).
+- 219 tests passing (85 parity golden + 134 KV analysis).
 - Parity smoke test completed: baseline × 3 VLM × n=10.
 
 ## Immediate Priorities
@@ -107,10 +116,10 @@ As of 2026-04-12, phases 1-8.5 are complete:
   benchmark runner must keep explicit per-model `parallel_requests` behavior,
   and benchmark changes must not silently collapse model-side concurrency.
 - Treat benchmark decoding/sampling settings as fixed experimental controls.
-  Benchmark code and configs must keep the project’s current generation
+  Benchmark code and configs must keep the project's current generation
   settings (`temperature`, `top_p`, `top_k`, `min_p`, penalties, seed,
   `max_tokens` rules) stable unless the user explicitly asks to run a different
-  experiment. Do not casually “improve” or “tune” these values during
+  experiment. Do not casually "improve" or "tune" these values during
   debugging.
 
 ## Bench Framework Expectations
@@ -121,11 +130,37 @@ The intended flow is:
 2. Build runtime × benchmark matrix
 3. Launch `llama-server` with the requested KV cache types
 4. Query the OpenAI-compatible API
-5. Evaluate outputs
-6. Persist checkpoints and result artifacts
-7. Generate CSV, JSON, and markdown summaries
+5. Extract per-sample timing/token data from response
+6. Evaluate outputs
+7. Compute aggregate stats (score std/median, latency percentiles, throughput)
+8. Snapshot GPU memory and KV cache usage
+9. Persist checkpoints and result artifacts
+10. Generate CSV, JSON, and markdown summaries (with timing columns when available)
 
 Dual-GPU execution is a requirement for the orchestrator design.
+
+### Observable Data Collected
+
+**Per sample** (every inference):
+- Generated text (raw), ground truth, metric score, pass/fail, error message
+- TTFT (ms), total latency (ms), prefill time (ms), decode time (ms)
+- Decode throughput (tok/s)
+- Prompt tokens, completion tokens, image count
+
+**Per cell** (runtime × benchmark):
+- Score: mean, std, median
+- TTFT: mean, p50, p95, p99
+- Total latency: mean, p50, p95, p99
+- Decode throughput: mean, min, max
+- GPU memory (bytes), KV cache tokens
+
+**KV cache analysis** (offline, via kv_analysis/):
+- Per-layer K/V distribution: mean, std, min, max, quantiles (q01-q99)
+- L2 norm distribution, K/V norm ratio, outlier channel ratio (10x median)
+- Vision vs text token separation for all above
+- Quant error: per-coordinate MSE, cosine similarity, inner product bias, vs theoretical
+- Attention: KL divergence, top-1 match, entropy
+- Rotation: Beta KS test, coordinate independence, vision vs text
 
 ## Build And Run
 
@@ -137,7 +172,7 @@ cmake -B build \
   -DGGML_CUDA=ON \
   -DCMAKE_CUDA_ARCHITECTURES="89;120" \
   -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j$(nproc)
+cmake --build build -j4    # -j4 recommended (nvcc OOM risk at -j8)
 ```
 
 ### `bench`
@@ -152,7 +187,7 @@ uv run jupyter lab
 
 ```bash
 python3 -m compileall bench/tq_bench
-cd bench && uv run pytest tests/ -q          # 62 parity evaluator tests
+cd bench && uv run pytest tests/ -q          # 85 parity evaluator tests
 cd bench && uv run pytest tq_bench/kv_analysis/tests/ -q  # 134 KV analysis tests
 ```
 
@@ -181,3 +216,5 @@ uv run python run_bench.py --num 30 --model qwen3_vl_2b_thinking
 - If you touch `bench/`, verify config loading and package importability before moving on.
 - Prefer validating `bench/` changes with `python3 -m compileall bench/tq_bench` and targeted `pytest` where practical.
 - If the user asks only for scaffolding or layout work, do not jump ahead into algorithm implementation without instruction.
+- When modifying `SampleResult` or `RunRecord`, ensure all constructors (including error/crash paths) populate the new fields.
+- The `CompletionTimings` dataclass is the single source of truth for server timing data — don't add parallel timing extraction elsewhere.
