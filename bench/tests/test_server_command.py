@@ -25,7 +25,7 @@ def _runtime(runtime_id: str, cache_k: str, cache_v: str) -> RuntimeConfig:
     )
 
 
-def test_build_command_disables_flash_attn_for_turbo_on_sm75(monkeypatch) -> None:
+def test_build_command_keeps_flash_attn_for_turbo_on_sm75(monkeypatch) -> None:
     monkeypatch.setattr("tq_bench.server._query_gpu_compute_cap", lambda gpu_id: 75)
     server = _make_server()
     cmd = server.build_command(_runtime("tq-4", "turbo4", "turbo4"), gpu_id=0)
@@ -33,8 +33,16 @@ def test_build_command_disables_flash_attn_for_turbo_on_sm75(monkeypatch) -> Non
     assert cmd[idx + 1] == "on"
 
 
-def test_build_command_keeps_flash_attn_for_turbo_on_sm120(monkeypatch) -> None:
+def test_build_command_disables_flash_attn_for_turbo_on_sm120(monkeypatch) -> None:
     monkeypatch.setattr("tq_bench.server._query_gpu_compute_cap", lambda gpu_id: 120)
+    server = _make_server()
+    cmd = server.build_command(_runtime("tq-4", "turbo4", "turbo4"), gpu_id=0)
+    idx = cmd.index("-fa")
+    assert cmd[idx + 1] == "off"
+
+
+def test_build_command_keeps_flash_attn_for_turbo_on_sm90(monkeypatch) -> None:
+    monkeypatch.setattr("tq_bench.server._query_gpu_compute_cap", lambda gpu_id: 90)
     server = _make_server()
     cmd = server.build_command(_runtime("tq-4", "turbo4", "turbo4"), gpu_id=0)
     idx = cmd.index("-fa")
