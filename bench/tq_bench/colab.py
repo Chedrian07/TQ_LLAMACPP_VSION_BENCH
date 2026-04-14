@@ -467,6 +467,39 @@ def _materialize_local_binaries(
     return runtime_lib_dir
 
 
+def _materialize_executable_path(repo_root: Path, binary_path: Path) -> Path:
+    resolved = binary_path.expanduser().resolve()
+    if str(resolved).startswith(str((repo_root / ".tq_bench_runtime").resolve())):
+        return resolved
+    if not str(resolved).startswith("/content/drive/"):
+        return resolved
+
+    source_lib_dir = resolved.parent
+    parts = resolved.parts
+    repo_slug = "manual"
+    llama_commit = "unknown"
+    cuda_arch = "unknown"
+
+    if "llama_server" in parts:
+        idx = parts.index("llama_server")
+        if len(parts) > idx + 4:
+            repo_slug = parts[idx + 1]
+            llama_commit = parts[idx + 2]
+            sm_token = parts[idx + 3]
+            cuda_arch = sm_token[2:] if sm_token.startswith("sm") else sm_token
+
+    runtime_lib_dir = _materialize_local_binaries(
+        repo_root,
+        repo_slug=repo_slug,
+        llama_commit=llama_commit,
+        cuda_arch=cuda_arch,
+        source_lib_dir=source_lib_dir,
+    )
+    localized = runtime_lib_dir / resolved.name
+    _note(f"Localized executable for runtime use: {resolved} -> {localized}")
+    return localized
+
+
 @dataclass(frozen=True)
 class LlamaServerArtifact:
     repo_root: Path
@@ -808,6 +841,7 @@ def build_run_bench_command(
         else _detect_llama_binary(root, "llama-server", profile=profile)
     )
     if resolved_server_binary is not None:
+        resolved_server_binary = _materialize_executable_path(root, resolved_server_binary)
         cmd.extend(["--server-binary", str(resolved_server_binary)])
     resolved_kv_dump_binary = (
         Path(kv_dump_binary_path).expanduser().resolve()
@@ -815,5 +849,6 @@ def build_run_bench_command(
         else _detect_llama_binary(root, "llama-kv-dump", profile=profile)
     )
     if resolved_kv_dump_binary is not None:
+        resolved_kv_dump_binary = _materialize_executable_path(root, resolved_kv_dump_binary)
         cmd.extend(["--kv-dump-binary", str(resolved_kv_dump_binary)])
     return cmd

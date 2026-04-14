@@ -68,6 +68,39 @@ def test_build_run_bench_command_includes_colab_overrides(tmp_path: Path) -> Non
     assert str(build_colab_bin / "llama-kv-dump") in joined
 
 
+def test_build_run_bench_command_localizes_drive_binary_paths(tmp_path: Path, monkeypatch) -> None:
+    repo_root = tmp_path / "repo"
+    (repo_root / "bench").mkdir(parents=True)
+    drive_server = Path("/content/drive/MyDrive/tq_vlm_bench/cache/llama_server/demo__llama.cpp/abc1234/sm75/bin/llama-server")
+    drive_kv_dump = Path("/content/drive/MyDrive/tq_vlm_bench/cache/llama_server/demo__llama.cpp/abc1234/sm75/bin/llama-kv-dump")
+
+    def fake_localize(root: Path, path: Path) -> Path:
+        assert root == repo_root.resolve()
+        if path == drive_server:
+            return repo_root / ".tq_bench_runtime" / "llama-server"
+        if path == drive_kv_dump:
+            return repo_root / ".tq_bench_runtime" / "llama-kv-dump"
+        raise AssertionError(path)
+
+    monkeypatch.setattr("tq_bench.colab._materialize_executable_path", fake_localize)
+
+    cmd = build_run_bench_command(
+        repo_root,
+        num=1,
+        model_id="qwen3_vl_2b_instruct",
+        model_quant="q4_k_m",
+        runtimes=["baseline"],
+        benchmarks=["ai2d"],
+        profile="colab",
+        server_binary_path=drive_server,
+        kv_dump_binary_path=drive_kv_dump,
+    )
+
+    joined = " ".join(cmd)
+    assert str(repo_root / ".tq_bench_runtime") in joined
+    assert str(drive_server) not in joined
+
+
 def test_detect_llama_binary_prefers_colab_build_for_colab_profile(tmp_path: Path) -> None:
     repo_root = tmp_path / "repo"
     build_bin = repo_root / "llama.cpp" / "build" / "bin"
