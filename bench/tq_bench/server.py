@@ -17,6 +17,52 @@ from .config import RuntimeConfig
 logger = logging.getLogger(__name__)
 
 
+def _query_gpu_compute_cap(gpu_id: int | None) -> int | None:
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=compute_cap", "--format=csv,noheader"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        if result.returncode == 0 and result.stdout:
+            lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+            index = gpu_id if gpu_id is not None and 0 <= gpu_id < len(lines) else 0
+            if lines:
+                major_minor = lines[index].split(".", 1)
+                if len(major_minor) == 2 and all(part.isdigit() for part in major_minor):
+                    return int(major_minor[0]) * 10 + int(major_minor[1])
+    except Exception:
+        pass
+
+    try:
+        import torch
+
+        if not torch.cuda.is_available():
+            return None
+        index = gpu_id if gpu_id is not None else 0
+        major, minor = torch.cuda.get_device_capability(index)
+        return major * 10 + minor
+    except Exception:
+        return None
+
+
+def _should_disable_flash_attn(runtime_config: RuntimeConfig, gpu_id: int | None) -> bool:
+    is_turbo = (
+        runtime_config.cache_type_k.startswith("turbo")
+        or runtime_config.cache_type_v.startswith("turbo")
+    )
+    if not is_turbo:
+        return False
+
+    compute_cap = _query_gpu_compute_cap(gpu_id)
+    if compute_cap is None:
+        return False
+
+    return compute_cap <= 75
+
+
 @dataclass(frozen=True)
 class ServerLaunchConfig:
     binary_path: Path
@@ -43,6 +89,8 @@ class LlamaServer:
 
     def build_command(self, runtime_config: RuntimeConfig, *, gpu_id: int | None = None) -> list[str]:
         n_parallel = max(1, self.launch_config.n_parallel)
+        disable_flash_attn = _should_disable_flash_attn(runtime_config, gpu_id)
+        flash_attn_mode = "off" if disable_flash_attn else "on"
 
         cmd = [
             str(self.launch_config.binary_path),
@@ -68,7 +116,7 @@ class LlamaServer:
             "-ngl",
             str(self.launch_config.n_gpu_layers),
             "-fa",
-            "on",
+            flash_attn_mode,
             "--parallel",
             str(n_parallel),
         ]
@@ -83,6 +131,11 @@ class LlamaServer:
             cmd.append("--no-warmup")
         if self.launch_config.no_mmap:
             cmd.append("--no-mmap")
+        if disable_flash_attn:
+            logger.info(
+                "Disabling flash attention for %s on low-CUDA-capability GPU",
+                runtime_config.id,
+            )
         return cmd
 
     # ------------------------------------------------------------------
