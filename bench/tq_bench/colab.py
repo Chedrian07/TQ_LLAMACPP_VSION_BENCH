@@ -440,6 +440,33 @@ def _llama_commit(llama_root: Path) -> str:
     return _run_text(["git", "rev-parse", "--short", "HEAD"], cwd=llama_root)
 
 
+def _materialize_local_binaries(
+    repo_root: Path,
+    *,
+    repo_slug: str,
+    llama_commit: str,
+    cuda_arch: str,
+    source_lib_dir: Path,
+) -> Path:
+    runtime_lib_dir = (
+        repo_root
+        / ".tq_bench_runtime"
+        / "llama_server"
+        / repo_slug
+        / llama_commit
+        / f"sm{cuda_arch}"
+        / "bin"
+    )
+    runtime_lib_dir.parent.mkdir(parents=True, exist_ok=True)
+    if runtime_lib_dir.exists():
+        shutil.rmtree(runtime_lib_dir)
+    shutil.copytree(source_lib_dir, runtime_lib_dir)
+    for path in runtime_lib_dir.rglob("*"):
+        if path.is_file():
+            path.chmod(path.stat().st_mode | 0o111)
+    return runtime_lib_dir
+
+
 @dataclass(frozen=True)
 class LlamaServerArtifact:
     repo_root: Path
@@ -522,15 +549,22 @@ def ensure_llama_server(
             and manifest.get("nvcc_version") == nvcc_version
             and manifest.get("build_type") == "Release"
         ):
-            prepend_ld_library_path(cached_lib_dir)
+            local_runtime_lib_dir = _materialize_local_binaries(
+                root,
+                repo_slug=repo_slug,
+                llama_commit=llama_commit,
+                cuda_arch=cuda_arch,
+                source_lib_dir=cached_lib_dir,
+            )
+            prepend_ld_library_path(local_runtime_lib_dir)
             _note(f"Using cached llama-server artifacts from {cached_lib_dir}.")
             return LlamaServerArtifact(
                 repo_root=root,
                 llama_root=llama_root,
                 llama_repo_url=llama_repo_url,
-                binary_path=cached_binary,
-                kv_dump_binary_path=cached_kv_dump_binary,
-                lib_dir=cached_lib_dir,
+                binary_path=local_runtime_lib_dir / "llama-server",
+                kv_dump_binary_path=local_runtime_lib_dir / "llama-kv-dump",
+                lib_dir=local_runtime_lib_dir,
                 cache_dir=cache_dir,
                 cuda_arch=cuda_arch,
                 llama_commit=llama_commit,
