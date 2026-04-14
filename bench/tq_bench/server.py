@@ -49,18 +49,12 @@ def _query_gpu_compute_cap(gpu_id: int | None) -> int | None:
 
 
 def _should_disable_flash_attn(runtime_config: RuntimeConfig, gpu_id: int | None) -> bool:
+    del gpu_id
     is_turbo = (
         runtime_config.cache_type_k.startswith("turbo")
         or runtime_config.cache_type_v.startswith("turbo")
     )
-    if not is_turbo:
-        return False
-
-    compute_cap = _query_gpu_compute_cap(gpu_id)
-    if compute_cap is None:
-        return False
-
-    return compute_cap <= 75
+    return is_turbo
 
 
 @dataclass(frozen=True)
@@ -133,7 +127,7 @@ class LlamaServer:
             cmd.append("--no-mmap")
         if disable_flash_attn:
             logger.info(
-                "Disabling flash attention for %s on low-CUDA-capability GPU",
+                "Disabling flash attention for %s on TurboQuant runtime",
                 runtime_config.id,
             )
         return cmd
