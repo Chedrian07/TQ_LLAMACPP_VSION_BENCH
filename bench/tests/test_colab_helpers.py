@@ -68,6 +68,23 @@ def test_build_run_bench_command_includes_colab_overrides(tmp_path: Path) -> Non
     assert str(build_colab_bin / "llama-kv-dump") in joined
 
 
+def test_build_run_bench_command_appends_extra_args(tmp_path: Path) -> None:
+    repo_root = tmp_path / "repo"
+    (repo_root / "bench").mkdir(parents=True)
+    cmd = build_run_bench_command(
+        repo_root,
+        num=10,
+        model_id="qwen3_vl_2b_thinking",
+        model_quant="bf16",
+        runtimes=["core", "prod"],
+        benchmarks=["ai2d"],
+        profile="colab",
+        extra_args=["--seed", "123", "--kv-dump-prompt", "hello"],
+    )
+
+    assert cmd[-4:] == ["--seed", "123", "--kv-dump-prompt", "hello"]
+
+
 def test_build_run_bench_command_localizes_drive_binary_paths(tmp_path: Path, monkeypatch) -> None:
     repo_root = tmp_path / "repo"
     (repo_root / "bench").mkdir(parents=True)
