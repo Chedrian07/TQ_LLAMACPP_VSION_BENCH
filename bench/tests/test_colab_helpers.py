@@ -392,6 +392,60 @@ def test_ensure_llama_server_uses_local_exec_copy_for_cached_artifacts(
     assert artifact.kv_dump_binary_path.exists()
 
 
+def test_ensure_llama_server_rebuilds_when_cached_copy_localization_fails(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    repo_root = tmp_path / "repo"
+    llama_root = repo_root / "llama.cpp"
+    (llama_root / ".git").mkdir(parents=True)
+    drive_root = tmp_path / "drive"
+    cache_dir = drive_root / "cache" / "llama_server" / "demo__llama.cpp" / "abc1234" / "sm75"
+    cached_lib_dir = cache_dir / "bin"
+    cached_lib_dir.mkdir(parents=True)
+    (cached_lib_dir / "llama-server").write_text("server", encoding="utf-8")
+    (cached_lib_dir / "llama-kv-dump").write_text("dump", encoding="utf-8")
+    (cache_dir / "manifest.json").write_text(
+        """
+{
+  "llama_repo_url": "https://github.com/demo/llama.cpp.git",
+  "cuda_arch": "75",
+  "llama_commit": "abc1234",
+  "nvcc_version": "Cuda compilation tools, release 12.8",
+  "build_type": "Release"
+}
+""".strip(),
+        encoding="utf-8",
+    )
+
+    build_bin = llama_root / "build-colab" / "bin"
+    build_bin.mkdir(parents=True)
+    (build_bin / "llama-server").write_text("server", encoding="utf-8")
+    (build_bin / "llama-kv-dump").write_text("dump", encoding="utf-8")
+
+    monkeypatch.setattr("tq_bench.colab.detect_cuda_architecture", lambda: "75")
+    monkeypatch.setattr("tq_bench.colab._llama_commit", lambda llama_root: "abc1234")
+    monkeypatch.setattr(
+        "tq_bench.colab._nvcc_version",
+        lambda: "Cuda compilation tools, release 12.8",
+    )
+    monkeypatch.setattr(
+        "tq_bench.colab._git_remote_url",
+        lambda repo_root: "https://github.com/demo/llama.cpp.git",
+    )
+
+    def fake_materialize(*args, **kwargs):
+        raise OSError("drive mount flaky")
+
+    monkeypatch.setattr("tq_bench.colab._materialize_local_binaries", fake_materialize)
+    monkeypatch.setattr("tq_bench.colab._run_checked", lambda *args, **kwargs: None)
+
+    artifact = ensure_llama_server(repo_root, drive_root)
+
+    assert artifact.binary_path == build_bin / "llama-server"
+    assert artifact.kv_dump_binary_path == build_bin / "llama-kv-dump"
+
+
 def test_find_latest_run_file_prefers_latest_matching_model(tmp_path: Path) -> None:
     older = tmp_path / "bench_model_a_old.json"
     newer = tmp_path / "bench_model_a_new.json"

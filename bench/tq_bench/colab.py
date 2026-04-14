@@ -582,27 +582,33 @@ def ensure_llama_server(
             and manifest.get("nvcc_version") == nvcc_version
             and manifest.get("build_type") == "Release"
         ):
-            local_runtime_lib_dir = _materialize_local_binaries(
-                root,
-                repo_slug=repo_slug,
-                llama_commit=llama_commit,
-                cuda_arch=cuda_arch,
-                source_lib_dir=cached_lib_dir,
-            )
-            prepend_ld_library_path(local_runtime_lib_dir)
-            _note(f"Using cached llama-server artifacts from {cached_lib_dir}.")
-            return LlamaServerArtifact(
-                repo_root=root,
-                llama_root=llama_root,
-                llama_repo_url=llama_repo_url,
-                binary_path=local_runtime_lib_dir / "llama-server",
-                kv_dump_binary_path=local_runtime_lib_dir / "llama-kv-dump",
-                lib_dir=local_runtime_lib_dir,
-                cache_dir=cache_dir,
-                cuda_arch=cuda_arch,
-                llama_commit=llama_commit,
-                nvcc_version=nvcc_version,
-            )
+            try:
+                local_runtime_lib_dir = _materialize_local_binaries(
+                    root,
+                    repo_slug=repo_slug,
+                    llama_commit=llama_commit,
+                    cuda_arch=cuda_arch,
+                    source_lib_dir=cached_lib_dir,
+                )
+                prepend_ld_library_path(local_runtime_lib_dir)
+                _note(f"Using cached llama-server artifacts from {cached_lib_dir}.")
+                return LlamaServerArtifact(
+                    repo_root=root,
+                    llama_root=llama_root,
+                    llama_repo_url=llama_repo_url,
+                    binary_path=local_runtime_lib_dir / "llama-server",
+                    kv_dump_binary_path=local_runtime_lib_dir / "llama-kv-dump",
+                    lib_dir=local_runtime_lib_dir,
+                    cache_dir=cache_dir,
+                    cuda_arch=cuda_arch,
+                    llama_commit=llama_commit,
+                    nvcc_version=nvcc_version,
+                )
+            except (OSError, shutil.Error) as exc:
+                _note(
+                    "Cached llama-server artifacts could not be localized from Drive; "
+                    f"rebuilding locally instead. ({exc})"
+                )
 
     build_dir = llama_root / build_dir_name
     configure_cmd = [
@@ -645,9 +651,12 @@ def ensure_llama_server(
         raise FileNotFoundError(f"Expected llama-kv-dump at {local_kv_dump_binary}")
 
     cache_dir.mkdir(parents=True, exist_ok=True)
-    if cached_lib_dir.exists():
-        shutil.rmtree(cached_lib_dir)
-    shutil.copytree(local_lib_dir, cached_lib_dir)
+    try:
+        if cached_lib_dir.exists():
+            shutil.rmtree(cached_lib_dir)
+        shutil.copytree(local_lib_dir, cached_lib_dir)
+    except (OSError, shutil.Error) as exc:
+        _note(f"Warning: could not refresh Drive cache at {cached_lib_dir}: {exc}")
     artifact = LlamaServerArtifact(
         repo_root=root,
         llama_root=llama_root,
