@@ -48,24 +48,6 @@ def _query_gpu_compute_cap(gpu_id: int | None) -> int | None:
         return None
 
 
-def _should_disable_flash_attn(runtime_config: RuntimeConfig, gpu_id: int | None) -> bool:
-    is_turbo = (
-        runtime_config.cache_type_k.startswith("turbo")
-        or runtime_config.cache_type_v.startswith("turbo")
-    )
-    if not is_turbo:
-        return False
-
-    compute_cap = _query_gpu_compute_cap(gpu_id)
-    if compute_cap is None:
-        return False
-
-    # Temporary Colab workaround: Blackwell turbo runtimes currently hit a
-    # misaligned-address fault in the CUDA flash-attn vec path, while A100/H100
-    # should continue to use flash attention.
-    return compute_cap >= 120
-
-
 @dataclass(frozen=True)
 class ServerLaunchConfig:
     binary_path: Path
@@ -92,8 +74,6 @@ class LlamaServer:
 
     def build_command(self, runtime_config: RuntimeConfig, *, gpu_id: int | None = None) -> list[str]:
         n_parallel = max(1, self.launch_config.n_parallel)
-        disable_flash_attn = _should_disable_flash_attn(runtime_config, gpu_id)
-        flash_attn_mode = "off" if disable_flash_attn else "on"
 
         cmd = [
             str(self.launch_config.binary_path),
@@ -119,7 +99,7 @@ class LlamaServer:
             "-ngl",
             str(self.launch_config.n_gpu_layers),
             "-fa",
-            flash_attn_mode,
+            "on",
             "--parallel",
             str(n_parallel),
         ]
@@ -134,11 +114,6 @@ class LlamaServer:
             cmd.append("--no-warmup")
         if self.launch_config.no_mmap:
             cmd.append("--no-mmap")
-        if disable_flash_attn:
-            logger.info(
-                "Disabling flash attention for %s on Blackwell TurboQuant runtime",
-                runtime_config.id,
-            )
         return cmd
 
     # ------------------------------------------------------------------
