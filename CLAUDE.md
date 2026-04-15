@@ -17,6 +17,7 @@ The project has two code tracks:
 - CUDA KV write/dequant/flash-attention paths and KV-dump tooling are present.
 - The benchmark framework supports 15 runtime configs, 11 benchmark configs, 2 Qwen3-VL model configs, dual-GPU execution lanes, checkpoint/resume, per-sample timing/token instrumentation, and KV analysis.
 - Official-style evaluators are implemented for `mmmu`, `mathvista`, `textvqa`, and `chartqapro`; AI2D uses the existing MCQ scorer.
+- The active research scope is frozen to 5 benchmarks: `ai2d`, `mmmu`, `mathvista`, `textvqa`, and `docvqa`. The other benchmark configs remain available in the framework but are out of scope for current experiments and reporting unless explicitly reopened.
 - The current test suite contains 224 collected tests: 85 evaluator/parity tests and 139 KV-analysis tests.
 
 ### Blackwell flash-attention status
@@ -35,6 +36,7 @@ CUDA 12.8 targeting sm_120 (Blackwell) has a compiler bug where generic-pointer 
 
 - Parity smoke (`baseline × {ai2d, mmmu, mathvista} × n=10`) has been run and kept as a small sanity check.
 - Additional local artifacts exist for P0/core/TurboQuant sweeps and a Thinking-model smoke run.
+- Current experiment planning is limited to `ai2d`, `mmmu`, `mathvista`, `textvqa`, and `docvqa`.
 - Those artifacts are exploratory, not the canonical frozen result set.
 - The final report and historical result interpretation are not yet synchronized with the latest code/config state.
 
@@ -44,8 +46,8 @@ The project is past the feature-construction phase. The main unfinished work is 
 
 1. freeze canonical P0 results with the current code path
 2. consolidate corrected prod/QJL interpretation (including the sqrt(2/pi) scale question)
-3. run controlled Thinking experiments
-4. expand to the full matrix only after the above stabilize
+3. run controlled Thinking experiments on the active 5-benchmark scope
+4. keep reporting and reruns scoped to `ai2d`, `mmmu`, `mathvista`, `textvqa`, and `docvqa`
 
 ## Retained Documentation
 
@@ -134,16 +136,21 @@ The cooperative FWHT in `turbo-common.cuh` uses `volatile float *` for all share
 
 ### Benchmarks
 
-VLM:
+Active experiment scope:
 
 - `ai2d`
-- `chartqa`
-- `chartqapro`
 - `docvqa`
 - `mathvista`
 - `mmmu`
-- `ocrbench_v2`
 - `textvqa`
+
+Configured but out of scope unless explicitly reopened:
+
+VLM:
+
+- `chartqa`
+- `chartqapro`
+- `ocrbench_v2`
 
 Text:
 
@@ -232,13 +239,13 @@ Needed:
 
 Needed:
 
-- compare `baseline`, `tq-4`, and `tq-K4V3` on the Thinking model
+- compare `baseline`, `tq-4`, and `tq-K4V3` on the Thinking model across `ai2d`, `mmmu`, `mathvista`, `textvqa`, and `docvqa`
 - separate short-answer and long-reasoning conditions
 - analyze whether longer reasoning degrades vision-token usefulness under KV quantization
 
 #### Phase 12 — optional full matrix
 
-Only worth running after Phases 9-11 are stable.
+This is no longer part of the active plan. Keep the current experiment scope limited to `ai2d`, `mmmu`, `mathvista`, `textvqa`, and `docvqa` unless the user explicitly reopens broader coverage.
 
 ## Build And Run
 

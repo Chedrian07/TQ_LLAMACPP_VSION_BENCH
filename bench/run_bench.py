@@ -2,10 +2,10 @@
 """TQ-VLM-Bench main runner.
 
 Usage:
-  # Quick smoke (10 samples, baseline only, 3 VLM benchmarks)
+  # Quick smoke (10 samples, baseline only, 5 active benchmarks)
   uv run python run_bench.py --num 10
 
-  # Full P0 run (100 samples, all runtimes, 3 VLM parity benchmarks)
+  # Default active-scope run (100 samples, active runtimes, 5 active benchmarks)
   uv run python run_bench.py --num 100
 
   # Specific runtimes
@@ -14,8 +14,8 @@ Usage:
   # Specific benchmarks
   uv run python run_bench.py --num 30 --benchmarks ai2d mmmu
 
-  # All 11 benchmarks × all runtimes
-  uv run python run_bench.py --num 100 --benchmarks all --runtimes all
+  # Full active benchmark set (5 benchmarks) on active runtimes
+  uv run python run_bench.py --num 100 --benchmarks all --runtimes active
 
   # Single model
   uv run python run_bench.py --num 30 --model qwen3_vl_2b_thinking
@@ -33,16 +33,19 @@ Usage:
   uv run python run_bench.py --num 50 --runtimes tq-all
 
 Runtimes are grouped into tiers:
+  active  = lcpp-kv-8, lcpp-kv-4, tq-2, tq-2h, tq-3, tq-3h, tq-4,
+            tq-K4V2, tq-K4V3, tq-K3V2, tqp-3, tqp-4, tqp-5
   core    = baseline, lcpp-kv-8, lcpp-kv-4, tq-4, tq-K4V3
   tq-all  = core + tq-2, tq-2h, tq-3, tq-3h, tq-K4V2, tq-K3V2
   prod    = tqp-3, tqp-4, tqp-5
   all     = tq-all + prod  (lcpp-kv-2 excluded: upstream unsupported)
 
 Benchmarks are grouped:
+  active  = ai2d, mmmu, mathvista, textvqa, docvqa  (active research scope)
   p0      = ai2d, mmmu, mathvista  (parity evaluators, official comparison)
   vlm     = all 8 VLM benchmarks
   text    = mmlu, commonsenseqa, hellaswag
-  all     = vlm + text
+  all     = ai2d, mmmu, mathvista, textvqa, docvqa  (default benchmark scope)
 
 P0 benchmarks use parity metrics; all others use existing (approximate) metrics.
 """
@@ -85,7 +88,24 @@ PROFILES_YAML = BENCH_DIR / "configs/profiles.yaml"
 # Runtime / benchmark groups
 # ---------------------------------------------------------------------------
 
+ACTIVE_RUNTIMES: list[str] = [
+    "lcpp-kv-8",
+    "lcpp-kv-4",
+    "tq-2",
+    "tq-2h",
+    "tq-3",
+    "tq-3h",
+    "tq-4",
+    "tq-K4V2",
+    "tq-K4V3",
+    "tq-K3V2",
+    "tqp-3",
+    "tqp-4",
+    "tqp-5",
+]
+
 RUNTIME_GROUPS: dict[str, list[str]] = {
+    "active": ACTIVE_RUNTIMES,
     "core": ["baseline", "lcpp-kv-8", "lcpp-kv-4", "tq-4", "tq-K4V3"],
     "tq-all": [
         "baseline", "lcpp-kv-8", "lcpp-kv-4",
@@ -101,13 +121,21 @@ RUNTIME_GROUPS: dict[str, list[str]] = {
     ],
 }
 
+ACTIVE_BENCHMARKS: list[str] = [
+    "ai2d",
+    "mmmu",
+    "mathvista",
+    "textvqa",
+    "docvqa",
+]
+
 BENCHMARK_GROUPS: dict[str, list[str]] = {
+    "active": ACTIVE_BENCHMARKS,
     "p0": ["ai2d", "mmmu", "mathvista"],
     "vlm": ["ai2d", "chartqa", "chartqapro", "docvqa", "mathvista", "mmmu",
             "ocrbench_v2", "textvqa"],
     "text": ["mmlu", "commonsenseqa", "hellaswag"],
-    "all": ["ai2d", "chartqa", "chartqapro", "docvqa", "mathvista", "mmmu",
-            "ocrbench_v2", "textvqa", "mmlu", "commonsenseqa", "hellaswag"],
+    "all": ACTIVE_BENCHMARKS,
 }
 
 # P0 benchmarks use parity metrics for official comparison
@@ -235,10 +263,10 @@ def main():
     )
     parser.add_argument("--num", type=int, required=True,
                         help="Number of samples per benchmark")
-    parser.add_argument("--runtimes", nargs="+", default=["core"],
-                        help="Runtime IDs or group names (core/tq-all/prod/all)")
-    parser.add_argument("--benchmarks", nargs="+", default=["p0"],
-                        help="Benchmark IDs or group names (p0/vlm/text/all)")
+    parser.add_argument("--runtimes", nargs="+", default=["active"],
+                        help="Runtime IDs or group names (active/core/tq-all/prod/all)")
+    parser.add_argument("--benchmarks", nargs="+", default=["all"],
+                        help="Benchmark IDs or group names (active/p0/vlm/text/all)")
     parser.add_argument("--model", action="append", dest="models", default=None,
                         help="Model ID from models.yaml (repeatable). Default: all configured models.")
     parser.add_argument("--profile", default="local",

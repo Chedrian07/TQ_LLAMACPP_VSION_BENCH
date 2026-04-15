@@ -70,6 +70,7 @@ As of 2026-04-15:
 - TurboQuant MSE and prod GGML types are implemented in `llama.cpp`, including CUDA flash-attention integration and KV dump tooling.
 - **Blackwell (sm_120) fix applied:** CUDA 12.8 has a compiler bug producing misaligned shared-memory loads in the cooperative FWHT. Fixed with `volatile float *` in turbo-common.cuh. See CLAUDE.md for details.
 - The Python benchmark framework is feature-complete for planned experiments: dual-GPU execution lanes, model-specific sampling controls, checkpoint/resume, per-sample timings, aggregate latency stats, and KV analysis.
+- The active experiment scope is now frozen to 5 benchmarks: `ai2d`, `mmmu`, `mathvista`, `textvqa`, and `docvqa`. Other configured benchmarks remain in the codebase but are out of scope for current runs and reporting unless explicitly reopened.
 - The test suite currently contains 224 collected tests (85 evaluator/parity, 139 KV-analysis).
 - Local exploratory outputs already include parity smoke, partial P0/core/TQ runs, and a Thinking-model smoke run.
 - Canonical frozen results and the final report are still behind the latest code/config state.
@@ -79,8 +80,8 @@ As of 2026-04-15:
 
 1. Freeze a canonical P0 baseline/core result set with the current code and configs.
 2. Consolidate corrected prod/QJL results and replace stale historical interpretations.
-3. Run controlled Thinking experiments that separate short-answer vs long-reasoning behavior.
-4. Expand to the full runtime × benchmark matrix only after the above are stable.
+3. Run controlled Thinking experiments that separate short-answer vs long-reasoning behavior on the active 5-benchmark scope.
+4. Do not expand benchmark coverage beyond `ai2d`, `mmmu`, `mathvista`, `textvqa`, and `docvqa` unless the user explicitly changes scope.
 
 ## Working Rules
 
@@ -92,6 +93,7 @@ As of 2026-04-15:
 - Keep prod runtime failures explicit in result records rather than silently skipping them.
 - Treat `parallel_requests` as an experimental control, not a tuning knob to “fix” failing runs.
 - Treat model sampling settings (`temperature`, `top_p`, `top_k`, `min_p`, penalties, seed) as fixed controls unless the experiment explicitly changes them.
+- Keep active benchmark work limited to `ai2d`, `mmmu`, `mathvista`, `textvqa`, and `docvqa`. Treat `chartqa`, `chartqapro`, `ocrbench_v2`, `mmlu`, `commonsenseqa`, and `hellaswag` as out of scope unless the user explicitly asks to reopen them.
 - If benchmark semantics change, update both `README.md` and `docs/OFFICIAL_PARITY_AUDIT.md`.
 
 ## Bench Framework Expectations
@@ -125,6 +127,7 @@ cd bench && UV_CACHE_DIR=/tmp/uv-cache uv run pytest tq_bench/kv_analysis/tests/
 - If you touch `llama.cpp` quantization or flash-attention paths, verify both build integrity and CLI wiring.
 - If you touch `SampleResult`, `RunRecord`, or `CompletionTimings`, check all constructors and failure paths.
 - The default runner is subset-based; do not claim full official parity without checking the audit doc and the invocation path.
+- The active benchmark scope is fixed to `ai2d`, `mmmu`, `mathvista`, `textvqa`, and `docvqa`; do not schedule or report out-of-scope benchmarks unless the user explicitly asks for them.
 - **Blackwell portability:** Do NOT remove `volatile` from shared-memory accesses in `turbo-common.cuh` — it works around a CUDA 12.8 sm_120 compiler bug. Do NOT use struct-pointer casts for turbo block global-memory access in the FA path — use `memcpy` + byte offsets.
 - **FA must stay ON** for turbo types — the non-FA attention path does not support turbo V quantization. Never add FA-OFF workarounds.
 - For CUDA misaligned-address crashes, use `compute-sanitizer --tool memcheck` to identify the exact source (global vs shared memory) before attempting fixes.

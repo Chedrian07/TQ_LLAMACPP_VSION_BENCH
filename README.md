@@ -6,6 +6,7 @@ Benchmarking TurboQuant KV cache quantization on vision-language models with a p
 
 - `llama.cpp/` implements 8 TurboQuant GGML KV-cache types: `turbo2`, `turbo2h`, `turbo3`, `turbo3h`, `turbo4`, `turbop3`, `turbop4`, `turbop5`.
 - `bench/` contains the active experiment framework: 15 runtime configs, 11 benchmark configs, 2 model configs, mixed-model dual-GPU orchestration, resume/checkpointing, per-sample timing/token instrumentation, and KV-dump analysis.
+- The default `run_bench.py` benchmark scope is the active 5-benchmark research set: `ai2d`, `mmmu`, `mathvista`, `textvqa`, and `docvqa`, and the default runtime scope is the active runtime set: `lcpp-kv-8`, `lcpp-kv-4`, all `tq-*`, and all `tqp-*` variants (excluding `baseline`).
 - Official-style evaluators are implemented for `mmmu`, `mathvista`, `textvqa`, and `chartqapro`; AI2D uses the existing MCQ scorer. The default runner still evaluates sampled subsets driven by `--num`.
 - The current suite contains 224 collected tests: 85 evaluator/parity tests and 139 KV-analysis tests.
 - Local run artifacts beyond the parity smoke test already exist, but the canonical frozen result set and final report are not yet synchronized with the latest code and configs.
@@ -89,6 +90,9 @@ cd bench && UV_CACHE_DIR=/tmp/uv-cache uv run pytest tq_bench/kv_analysis/tests/
 ```bash
 cd bench
 
+# Default active-scope run (ai2d, mmmu, mathvista, textvqa, docvqa) on active runtimes
+uv run python run_bench.py --num 100
+
 # Parity-oriented P0 run on the core runtime group
 uv run python run_bench.py --num 100 --runtimes core --benchmarks p0
 
@@ -104,6 +108,7 @@ uv run python run_bench.py --num 20 --model qwen3_vl_2b_thinking   --runtimes ba
 
 ## Interpretation Notes
 
+- `run_bench.py` now defaults to the active 5-benchmark research scope when `--benchmarks` is omitted, and to the active runtime set (`lcpp-kv-8`, `lcpp-kv-4`, all `tq-*`, all `tqp-*`, excluding `baseline`) when `--runtimes` is omitted.
 - `run_bench.py` overwrites benchmark sample counts with `--num`; the default runner does not automatically switch to full-split parity evaluation even though the config schema supports `parity_sample_count = -1`.
 - Scores from text benchmarks (`mmlu`, `commonsenseqa`, `hellaswag`) are project-controlled generation scores, not official leaderboard scores.
 - Use `docs/OFFICIAL_PARITY_AUDIT.md` before making any “official reproduction” claim.

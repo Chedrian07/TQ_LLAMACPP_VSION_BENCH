@@ -16,6 +16,11 @@ Why:
 2. The dataset layer supports `parity_sample_count = -1`, but the default runner does not automatically switch to it.
 3. Some benchmarks are still evaluated through project-specific generation-based approximations.
 
+When `--benchmarks` is omitted, the runner now defaults to the active 5-benchmark research scope:
+`ai2d`, `mmmu`, `mathvista`, `textvqa`, and `docvqa`.
+When `--runtimes` is omitted, it defaults to the active runtime set:
+`lcpp-kv-8`, `lcpp-kv-4`, all `tq-*`, and all `tqp-*` variants, excluding `baseline`.
+
 This means the framework is strong for **controlled relative comparison across runtimes**, but any “official reproduction” claim must be phrased carefully.
 
 ## Code Facts Behind That Verdict
