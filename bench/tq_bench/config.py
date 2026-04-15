@@ -53,6 +53,7 @@ class ModelConfig:
     description: str = ""
     # Model-specific max_tokens override (e.g. Thinking models need more room)
     max_tokens_override: int | None = None
+    request_timeout: float | None = None
     reasoning_mode: str = "off"  # "off" | "think"  — informational
     # Optional execution-lane hints for dual-GPU / mixed-model runs.
     gpu_id: int | None = None
@@ -217,6 +218,11 @@ def load_models(path: str | Path) -> dict[str, ModelConfig]:
             mmproj_path=mmproj_path,
             description=item.get("description", ""),
             max_tokens_override=int(mto) if mto is not None else None,
+            request_timeout=(
+                float(item["request_timeout"])
+                if item.get("request_timeout") is not None
+                else None
+            ),
             reasoning_mode=str(item.get("reasoning_mode", "off")),
             gpu_id=int(item["gpu_id"]) if item.get("gpu_id") is not None else None,
             port=int(item["port"]) if item.get("port") is not None else None,

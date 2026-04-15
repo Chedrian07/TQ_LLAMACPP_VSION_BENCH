@@ -613,7 +613,7 @@ def main():
         runner = BenchmarkRunner(
             server_binary=server_binary,
             default_port=model_port,
-            request_timeout=180.0,
+            request_timeout=model_config.request_timeout or 180.0,
             max_retries=2,
             parallel_requests=base_parallel,
             batch_size=batch_size,

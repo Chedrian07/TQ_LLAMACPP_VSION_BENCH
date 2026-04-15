@@ -78,3 +78,4 @@ models:
     # budgets, but floor max_tokens at 4096 so long reasoning chains do not get
     # clipped too early.
     max_tokens_override: 4096
+    request_timeout: 600
