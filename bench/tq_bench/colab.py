@@ -844,6 +844,7 @@ def build_run_bench_command(
     slot_save_path: str | Path | None = None,
     server_binary_path: str | Path | None = None,
     kv_dump_binary_path: str | Path | None = None,
+    logs_dir: str | Path | None = None,
     extra_args: list[str] | None = None,
 ) -> list[str]:
     root = Path(repo_root).resolve()
@@ -896,6 +897,8 @@ def build_run_bench_command(
     if resolved_kv_dump_binary is not None:
         resolved_kv_dump_binary = _materialize_executable_path(root, resolved_kv_dump_binary)
         cmd.extend(["--kv-dump-binary", str(resolved_kv_dump_binary)])
+    if logs_dir is not None:
+        cmd.extend(["--logs-dir", str(Path(logs_dir).expanduser().resolve())])
     if extra_args:
         cmd.extend(extra_args)
     return cmd

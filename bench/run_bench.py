@@ -272,6 +272,9 @@ def main():
                         help="Output JSON path (auto-generated if omitted)")
     parser.add_argument("--resume", type=str, default=None,
                         help="Resume from existing JSON (skip completed cells)")
+    parser.add_argument("--logs-dir", type=str, default=None,
+                        help="Override logs directory (default: PROJECT_ROOT/logs). "
+                             "Use this to persist KV dumps/analysis to Google Drive on Colab.")
     parser.add_argument("--kv-dump", action="store_true", default=False,
                         help="After benchmarks, extract KV dumps + run analysis for each runtime")
     parser.add_argument("--kv-dump-image", type=str, default=None,
@@ -279,6 +282,13 @@ def main():
     parser.add_argument("--kv-dump-prompt", type=str, default=None,
                         help="Prompt for KV dump probe (default: 'Describe this image in detail.')")
     args = parser.parse_args()
+
+    # Allow overriding LOGS_DIR from the command line (e.g. to persist KV
+    # dumps/analysis to Google Drive on Colab).
+    global LOGS_DIR  # noqa: PLW0603
+    if args.logs_dir is not None:
+        LOGS_DIR = Path(args.logs_dir).expanduser().resolve()
+        LOGS_DIR.mkdir(parents=True, exist_ok=True)
 
     from tq_bench.config import (
         BenchmarkConfig, ExperimentCell,
