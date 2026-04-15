@@ -513,8 +513,10 @@ class LlamaServerArtifact:
     llama_commit: str
     nvcc_version: str
     build_type: str = "Release"
+    cmake_args: tuple[str, ...] = ()
+    build_targets: tuple[str, ...] = ("llama-server", "llama-kv-dump")
 
-    def to_manifest(self) -> dict[str, str]:
+    def to_manifest(self) -> dict[str, object]:
         data = asdict(self)
         return {
             "repo_root": str(data["repo_root"]),
@@ -537,6 +539,11 @@ def ensure_llama_server(
     *,
     force_rebuild: bool = False,
     build_dir_name: str = "build-colab",
+    build_type: str = "Release",
+    cuda_arch_override: str | None = None,
+    extra_cmake_args: list[str] | tuple[str, ...] | None = None,
+    build_targets: list[str] | tuple[str, ...] | None = None,
+    build_jobs: int | None = None,
 ) -> LlamaServerArtifact:
     root = Path(repo_root).resolve()
     drive = Path(drive_root).expanduser().resolve()
@@ -545,15 +552,19 @@ def ensure_llama_server(
         raise FileNotFoundError(
             f"Custom llama.cpp checkout not found at {llama_root}. "
             "Call ensure_llama_cpp_checkout() first."
-        )
+    )
     llama_repo_url = _git_remote_url(llama_root)
     repo_slug = _repo_slug_from_url(llama_repo_url)
-    cuda_arch = detect_cuda_architecture()
+    cuda_arch = str(cuda_arch_override) if cuda_arch_override is not None else detect_cuda_architecture()
     llama_commit = _llama_commit(llama_root)
     nvcc_version = _nvcc_version()
+    cmake_args = [str(arg) for arg in (extra_cmake_args or [])]
+    build_targets_tuple = tuple(str(target) for target in (build_targets or ("llama-server", "llama-kv-dump")))
+    build_jobs_resolved = build_jobs if build_jobs is not None else (os.cpu_count() or 2)
     _note(
         f"Preparing llama-server build for sm{cuda_arch} "
-        f"(llama.cpp {llama_commit}, nvcc={nvcc_version.splitlines()[-1].strip()})..."
+        f"(llama.cpp {llama_commit}, build_type={build_type}, "
+        f"nvcc={nvcc_version.splitlines()[-1].strip()})..."
     )
     nvcc_release = _parse_nvcc_release(nvcc_version)
     if int(cuda_arch) >= 120 and (nvcc_release is None or nvcc_release < (12, 8)):
@@ -580,7 +591,9 @@ def ensure_llama_server(
             and manifest.get("cuda_arch") == cuda_arch
             and manifest.get("llama_commit") == llama_commit
             and manifest.get("nvcc_version") == nvcc_version
-            and manifest.get("build_type") == "Release"
+            and manifest.get("build_type", "Release") == build_type
+            and list(manifest.get("cmake_args", [])) == cmake_args
+            and list(manifest.get("build_targets", list(build_targets_tuple))) == list(build_targets_tuple)
         ):
             try:
                 local_runtime_lib_dir = _materialize_local_binaries(
@@ -603,6 +616,9 @@ def ensure_llama_server(
                     cuda_arch=cuda_arch,
                     llama_commit=llama_commit,
                     nvcc_version=nvcc_version,
+                    build_type=build_type,
+                    cmake_args=tuple(cmake_args),
+                    build_targets=build_targets_tuple,
                 )
             except (OSError, shutil.Error) as exc:
                 _note(
@@ -618,7 +634,8 @@ def ensure_llama_server(
         *_cmake_generator_args(),
         "-DGGML_CUDA=ON",
         f"-DCMAKE_CUDA_ARCHITECTURES={cuda_arch}",
-        "-DCMAKE_BUILD_TYPE=Release",
+        f"-DCMAKE_BUILD_TYPE={build_type}",
+        *cmake_args,
     ]
     _run_checked(
         configure_cmd,
@@ -632,10 +649,9 @@ def ensure_llama_server(
             "--build",
             str(build_dir),
             "-j",
-            str(os.cpu_count() or 2),
+            str(build_jobs_resolved),
             "--target",
-            "llama-server",
-            "llama-kv-dump",
+            *build_targets_tuple,
         ],
         cwd=str(llama_root),
         step="CMake build for llama-server",
@@ -668,6 +684,9 @@ def ensure_llama_server(
         cuda_arch=cuda_arch,
         llama_commit=llama_commit,
         nvcc_version=nvcc_version,
+        build_type=build_type,
+        cmake_args=tuple(cmake_args),
+        build_targets=build_targets_tuple,
     )
     manifest_path.write_text(
         json.dumps(artifact.to_manifest(), indent=2),

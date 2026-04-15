@@ -446,6 +446,60 @@ def test_ensure_llama_server_rebuilds_when_cached_copy_localization_fails(
     assert artifact.kv_dump_binary_path == build_bin / "llama-kv-dump"
 
 
+def test_ensure_llama_server_honors_build_overrides(tmp_path: Path, monkeypatch) -> None:
+    repo_root = tmp_path / "repo"
+    llama_root = repo_root / "llama.cpp"
+    (llama_root / ".git").mkdir(parents=True)
+    drive_root = tmp_path / "drive"
+    calls: list[list[str]] = []
+
+    monkeypatch.setattr("tq_bench.colab.detect_cuda_architecture", lambda: "90")
+    monkeypatch.setattr("tq_bench.colab._llama_commit", lambda llama_root: "abc1234")
+    monkeypatch.setattr(
+        "tq_bench.colab._nvcc_version",
+        lambda: "Cuda compilation tools, release 12.8",
+    )
+    monkeypatch.setattr(
+        "tq_bench.colab._git_remote_url",
+        lambda repo_root: "https://github.com/demo/llama.cpp.git",
+    )
+
+    def fake_run_checked(cmd, *, cwd=None, env=None, step, stream_output=False):
+        del cwd, env, step, stream_output
+        calls.append(cmd)
+        if "--build" in cmd:
+            build_dir = Path(cmd[2])
+            bin_dir = build_dir / "bin"
+            bin_dir.mkdir(parents=True, exist_ok=True)
+            (bin_dir / "llama-server").write_text("server", encoding="utf-8")
+            (bin_dir / "llama-kv-dump").write_text("dump", encoding="utf-8")
+
+    monkeypatch.setattr("tq_bench.colab._run_checked", fake_run_checked)
+
+    artifact = ensure_llama_server(
+        repo_root,
+        drive_root,
+        force_rebuild=True,
+        build_dir_name="build-blackwell",
+        build_type="RelWithDebInfo",
+        cuda_arch_override="120",
+        extra_cmake_args=["-DGGML_CUDA_FA=OFF"],
+        build_targets=["llama-server", "llama-kv-dump"],
+        build_jobs=7,
+    )
+
+    configure_cmd, build_cmd = calls
+    assert str(llama_root / "build-blackwell") in configure_cmd
+    assert "-DCMAKE_BUILD_TYPE=RelWithDebInfo" in configure_cmd
+    assert "-DCMAKE_CUDA_ARCHITECTURES=120" in configure_cmd
+    assert "-DGGML_CUDA_FA=OFF" in configure_cmd
+    assert build_cmd[0:4] == ["cmake", "--build", str(llama_root / "build-blackwell"), "-j"]
+    assert "7" in build_cmd
+    assert build_cmd[-2:] == ["llama-server", "llama-kv-dump"]
+    assert artifact.build_type == "RelWithDebInfo"
+    assert artifact.cmake_args == ("-DGGML_CUDA_FA=OFF",)
+
+
 def test_find_latest_run_file_prefers_latest_matching_model(tmp_path: Path) -> None:
     older = tmp_path / "bench_model_a_old.json"
     newer = tmp_path / "bench_model_a_new.json"
