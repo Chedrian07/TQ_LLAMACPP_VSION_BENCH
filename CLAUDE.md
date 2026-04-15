@@ -9,7 +9,7 @@ The project has two code tracks:
 1. `llama.cpp/` — implement new TurboQuant GGML KV cache types and runtime integration
 2. `bench/` — run VLM/text benchmarks, collect metrics, and analyze KV dumps
 
-## Current Status (2026-04-13)
+## Current Status (2026-04-15)
 
 ### Codebase status
 
@@ -18,6 +18,18 @@ The project has two code tracks:
 - The benchmark framework supports 15 runtime configs, 11 benchmark configs, 2 Qwen3-VL model configs, dual-GPU execution lanes, checkpoint/resume, per-sample timing/token instrumentation, and KV analysis.
 - Official-style evaluators are implemented for `mmmu`, `mathvista`, `textvqa`, and `chartqapro`; AI2D uses the existing MCQ scorer.
 - The current test suite contains 224 collected tests: 85 evaluator/parity tests and 139 KV-analysis tests.
+
+### Blackwell flash-attention status
+
+CUDA 12.8 targeting sm_120 (Blackwell) has a compiler bug where generic-pointer shared-memory indexing in the cooperative FWHT butterfly generates byte-stride loads instead of float-stride loads. This produces `Invalid __shared__ read of size 4 bytes` misaligned-address crashes.
+
+**Fix applied (turbo-common.cuh):** All shared-memory float accesses use `volatile float *` to force correct scalar load/store. Global-memory turbo block reads use `memcpy` + byte offsets (no struct-pointer casts). Confirmed working on RTX 5070 Ti (sm_120, CUDA 13.1); pending final verification on Colab B200 (sm_120, CUDA 12.8).
+
+**Important:** Never disable flash attention for turbo types — V quantization requires FA to be ON.
+
+### Known issue: QJL scale factor
+
+`TURBO_QJL_SCALE = sqrt(pi/2) ≈ 1.2533` is defined in `ggml-common-turbo.h` but not applied in the QJL correction formula (`fattn-common.cuh`). The correction overestimates by ~25%. Needs paper cross-reference before the canonical P0 freeze.
 
 ### Experiment status
 
@@ -31,7 +43,7 @@ The project has two code tracks:
 The project is past the feature-construction phase. The main unfinished work is experimental consolidation:
 
 1. freeze canonical P0 results with the current code path
-2. consolidate corrected prod/QJL interpretation
+2. consolidate corrected prod/QJL interpretation (including the sqrt(2/pi) scale question)
 3. run controlled Thinking experiments
 4. expand to the full matrix only after the above stabilize
 
@@ -99,6 +111,10 @@ The current enum assignments are:
 - Asymmetric K/V runtime combinations are supported through config, not new GGML enums.
 - prod/QJL support includes CUDA flash-attention vec-dot handling in the current codebase.
 - KV dump tooling can export layer-wise K/V tensors for offline Python analysis.
+
+### Blackwell (sm_120) portability notes
+
+The cooperative FWHT in `turbo-common.cuh` uses `volatile float *` for all shared-memory buffer accesses. This works around a CUDA 12.8 compiler bug where generic-pointer shared-memory indexing produces byte-stride instead of float-stride loads. Do NOT remove `volatile` from these functions without verifying on CUDA 12.8 + sm_120. The turbo dequantize functions use raw `const char *` + `memcpy` for global-memory block field access (no struct-pointer casts) for the same reason.
 
 ## `bench/` Framework Summary
 
