@@ -85,6 +85,43 @@ def test_build_run_bench_command_appends_extra_args(tmp_path: Path) -> None:
     assert cmd[-4:] == ["--seed", "123", "--kv-dump-prompt", "hello"]
 
 
+def test_build_run_bench_command_accepts_string_groups(tmp_path: Path) -> None:
+    repo_root = tmp_path / "repo"
+    (repo_root / "bench").mkdir(parents=True)
+    cmd = build_run_bench_command(
+        repo_root,
+        num=10,
+        model_id="qwen3_vl_2b_instruct",
+        model_quant="bf16",
+        runtimes="core",
+        benchmarks="all",
+        profile="colab",
+    )
+
+    joined = " ".join(cmd)
+    assert "--runtimes core" in joined
+    assert "--benchmarks all" in joined
+
+
+def test_build_run_bench_command_rejects_non_iterable_group_value(tmp_path: Path) -> None:
+    repo_root = tmp_path / "repo"
+    (repo_root / "bench").mkdir(parents=True)
+    try:
+        build_run_bench_command(
+            repo_root,
+            num=10,
+            model_id="qwen3_vl_2b_instruct",
+            model_quant="bf16",
+            runtimes=["core"],
+            benchmarks=all,
+            profile="colab",
+        )
+    except TypeError as exc:
+        assert "Did you mean ['all']" in str(exc)
+    else:
+        raise AssertionError("build_run_bench_command should have raised TypeError")
+
+
 def test_build_run_bench_command_localizes_drive_binary_paths(tmp_path: Path, monkeypatch) -> None:
     repo_root = tmp_path / "repo"
     (repo_root / "bench").mkdir(parents=True)

@@ -813,6 +813,19 @@ def _detect_llama_binary(
     return None
 
 
+def _normalize_cli_values(name: str, values):
+    if values is None:
+        return None
+    if isinstance(values, str):
+        return [values]
+    if isinstance(values, (list, tuple)):
+        return [str(value) for value in values]
+    raise TypeError(
+        f"{name} must be a string or a list/tuple of strings, got "
+        f"{type(values).__name__}. Did you mean ['all'] instead of all?"
+    )
+
+
 def build_run_bench_command(
     repo_root: str | Path,
     *,
@@ -834,6 +847,9 @@ def build_run_bench_command(
     extra_args: list[str] | None = None,
 ) -> list[str]:
     root = Path(repo_root).resolve()
+    runtimes = _normalize_cli_values("runtimes", runtimes)
+    benchmarks = _normalize_cli_values("benchmarks", benchmarks)
+    extra_args = _normalize_cli_values("extra_args", extra_args)
     cmd = [
         sys.executable,
         str(root / "bench" / "run_bench.py"),
