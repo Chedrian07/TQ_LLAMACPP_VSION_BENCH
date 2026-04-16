@@ -7,7 +7,7 @@ profiles:
     gpu_id: 0
     port: 18080
     parallel_requests: 1
-    cache_ram: 16384
+    cache_ram: 20480
     slot_save_path: /content/TQ_LLAMACPP_VSION_BENCH/kvcache
     batch_size: 512
     ubatch_size: 512
