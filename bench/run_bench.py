@@ -154,6 +154,10 @@ OFFICIAL_SCORES: dict[str, float] = {
 # TQ/prod runtimes default to parallel=1 to avoid CUDA concurrency crashes.
 # An explicit CLI --parallel override is allowed to bypass this default.
 TQ_RUNTIME_PREFIXES = ("tq-", "tqp-")
+BENCHMARK_PARALLEL_OVERRIDES: dict[str, int] = {
+    "mmmu": 4,
+    "docvqa": 4,
+}
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -668,6 +672,7 @@ def main():
             n_parallel = 1 if (is_tq and args.parallel is None) else base_parallel
 
             for bm in benchmarks:
+                n_parallel_bm = BENCHMARK_PARALLEL_OVERRIDES.get(bm.id, n_parallel)
                 cell_key = make_cell_key(model_config.id, rt.id, bm.id)
 
                 if cell_key in completed_keys:
@@ -697,7 +702,7 @@ def main():
                     bm.id,
                     rt.bits,
                     bm.metric,
-                    n_parallel,
+                    n_parallel_bm,
                 )
                 logger.info("=" * 60)
 
@@ -710,7 +715,7 @@ def main():
                         gpu_id=model_gpu_id,
                         port=model_port,
                         seed=args.seed,
-                        parallel_requests=n_parallel,
+                        parallel_requests=n_parallel_bm,
                         progress_position=lane_idx,
                     )
                 except Exception as exc:
